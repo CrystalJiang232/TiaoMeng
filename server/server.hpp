@@ -1,0 +1,120 @@
+#pragma once
+
+#include <boost/asio.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <memory>
+#include <unordered_map>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <cstddef>
+#include <span>
+#include <functional>
+#include <optional>
+#include <expected>
+
+#include <print>
+#include <algorithm>
+#include <ranges>
+
+namespace net = boost::asio;
+using tcp = net::ip::tcp;
+
+class Connection;
+class Server;
+class Router;
+
+enum class MsgType : uint8_t
+{
+    Handshake = 0x01,
+    Encrypted = 0x02,
+    Command = 0x03,
+    Broadcast = 0x04
+};
+
+struct Msg
+{
+    using payload_t = std::vector<std::byte>;
+
+    enum class errc
+    {
+        size_err,
+        len_verify_err,
+    };
+
+    uint32_t len;
+    uint8_t type;
+    payload_t payload;
+
+    static constexpr size_t max_len = 1024 * 1024;
+    
+    static std::expected<Msg,errc> parse(std::span<const std::byte>); //Make Msg from parsed data
+    static std::expected<Msg,errc> create(std::span<const std::byte>, MsgType = MsgType::Handshake); //Make Msg from raw data
+    payload_t serialize() const;
+};
+
+
+
+class Server
+{
+public:
+    Server(net::io_context& io, unsigned short port);
+    void start();
+    void remove_connection(std::string_view id);
+    void broadcast(const Msg& msg, std::string_view exclude_id = "");
+    Router* get_router() 
+    { 
+        return router.get(); 
+    }
+
+private:
+    net::awaitable<void> do_accept();
+    
+    net::io_context& io_ctx;
+    tcp::acceptor acceptor;
+    std::unordered_map<std::string, std::shared_ptr<Connection>> connections;
+    std::unique_ptr<Router> router;
+
+};
+
+class Router
+{
+
+public:
+    using Handler = std::function<void(std::shared_ptr<Connection>, const Msg&)>;
+    
+    void register_handler(MsgType type, Handler hdl);
+    void route(std::shared_ptr<Connection> conn, const Msg& msg);
+
+private:
+    std::unordered_map<MsgType, Handler> handlers;
+
+};
+
+
+class Connection : public std::enable_shared_from_this<Connection>
+{
+
+public:
+    Connection(tcp::socket sock, Server* srv);
+    void start();
+    void send(const Msg& msg);
+    std::string_view get_id() const 
+    { 
+        return id; 
+    }
+
+private:
+    net::awaitable<void> read_header();
+    net::awaitable<void> read_body(uint32_t len);
+    net::awaitable<void> write();
+    
+    tcp::socket socket;
+    Server* server;
+    std::string id;
+    std::vector<std::byte> read_buf;
+    std::vector<std::byte> write_buf;
+    std::vector<Msg> write_queue;
+    bool write_in_progress = false;
+};
