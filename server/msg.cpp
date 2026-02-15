@@ -9,27 +9,19 @@ std::expected<Msg,Msg::errc> Msg::parse(std::span<const std::byte> data)
         return std::unexpected(Msg::errc::size_err);
     }
 
-    uint32_t wire_len = 
-        (static_cast<uint32_t>(data[0]) << 24) |
-        (static_cast<uint32_t>(data[1]) << 16) |
-        (static_cast<uint32_t>(data[2]) << 8)  |
-        static_cast<uint32_t>(data[3]);
-    
+    uint32_t wire_len = Hibiscus::endify(*reinterpret_cast<const uint32_t*>(data.data())); //...
+
     if (wire_len != data.size())
     {
         return std::unexpected(Msg::errc::len_verify_err);
     }
 
-    return Msg{
-        .len = wire_len,   
-        .type = static_cast<uint8_t>(data[4]),
-        .payload = data | std::views::drop(5) | std::ranges::to<payload_t>()
-    };
+    return Msg::create(data | std::views::drop(5), static_cast<MsgType>(data[4]));
 }
 
 std::expected<Msg,Msg::errc> Msg::create(std::span<const std::byte> data,MsgType type)
 {
-    if(data.size() > max_len - 5)
+    if(data.size() > max_len - 5uz)
     {
         return std::unexpected(Msg::errc::size_err);
     }
@@ -41,16 +33,11 @@ std::expected<Msg,Msg::errc> Msg::create(std::span<const std::byte> data,MsgType
 
 Msg::payload_t Msg::serialize() const
 {
-    payload_t ret(len+5,{});
+    payload_t ret(len,{});
 
-    for(auto i : std::views::iota(0,4))
-    {
-        ret[i] = static_cast<std::byte>((len >> (3-i)*8) & 0xff);
-    }
-
+    *reinterpret_cast<uint32_t*>(ret.data()) = Hibiscus::endify(len);
     ret[4] = static_cast<std::byte>(type);
     
     std::ranges::copy(payload,ret.data() + 5);
-
     return ret;
 }

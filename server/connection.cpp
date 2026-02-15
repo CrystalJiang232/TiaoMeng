@@ -1,16 +1,17 @@
 #include "server.hpp"
-#include <boost/uuid/uuid.hpp>
-#include <boost/uuid/uuid_generators.hpp>
-#include <boost/uuid/uuid_io.hpp>
-#include <iostream>
 
-Connection::Connection(tcp::socket sock, Server* srv)
+Connection::Connection(tcp::socket sock, Server* srv, std::string id)
     : socket(std::move(sock))
     , server(srv)
     , write_in_progress(false)
+    , id(id)
 {
-    boost::uuids::uuid uuid = boost::uuids::random_generator()();
-    id = boost::uuids::to_string(uuid);
+    std::println("Connection established with id = {}",id);
+}
+
+Connection::~Connection() noexcept
+{
+    std::println("Disconnected with id = {}!",id);
 }
 
 void Connection::start()
@@ -27,26 +28,20 @@ void Connection::start()
 net::awaitable<void> Connection::read_header()
 {
     read_buf.resize(4);
-    
-    if (auto [ec, n] = co_await net::async_read(
+
+    auto [ec, n] = co_await net::async_read(
         socket,
-        net::buffer(read_buf),
+        net::buffer(read_buf,4),
         net::as_tuple(net::use_awaitable));
-        ec || n != 4)
-    {
-        server->remove_connection(id);
-        co_return;
-    }
     
-    uint32_t len = 
-        (static_cast<uint32_t>(read_buf[0]) << 24) |
-        (static_cast<uint32_t>(read_buf[1]) << 16) |
-        (static_cast<uint32_t>(read_buf[2]) << 8)  |
-        static_cast<uint32_t>(read_buf[3]);
-    
-    if (len < 5 || 
-        len > 1024 * 1024) //Extra constraint: DoS
+    uint32_t len = Hibiscus::endify(*reinterpret_cast<uint32_t*>(read_buf.data()));
+
+    if (
+        ec || n != 4 ||  //Read Error(ec set or insufficient bytes)
+        len < 5 || len > 1024 * 1024  //invalid size(Not-a-msg / anti-DoS)
+    )
     {
+        
         server->remove_connection(id);
         co_return;
     }
@@ -57,7 +52,7 @@ net::awaitable<void> Connection::read_header()
 net::awaitable<void> Connection::read_body(uint32_t len)
 {
     read_buf.resize(len);   
-    
+
     if (auto [ec, n] = co_await net::async_read(
         socket,
         net::buffer(read_buf.data() + 4, len - 4),
@@ -69,7 +64,7 @@ net::awaitable<void> Connection::read_body(uint32_t len)
     }
     
     auto msg = Msg::parse(read_buf);
-    
+
     if (!msg)
     {
         server->remove_connection(id);
@@ -83,7 +78,6 @@ net::awaitable<void> Connection::read_body(uint32_t len)
 
 void Connection::send(const Msg& msg)
 {
-
     auto self = shared_from_this();
     
     net::dispatch(socket.get_executor(),
@@ -109,8 +103,7 @@ net::awaitable<void> Connection::write()
 {
     while (!write_queue.empty())
     {
-        auto& msg = write_queue.front();
-        auto buf = msg.serialize();
+        auto buf = write_queue.front().serialize();
         
         if (auto [ec, n] = co_await net::async_write(
             socket,
@@ -122,7 +115,7 @@ net::awaitable<void> Connection::write()
             co_return;
         }
         
-        write_queue.erase(write_queue.begin());
+        write_queue.pop_front();
     }
     
     write_in_progress = false;

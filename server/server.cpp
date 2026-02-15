@@ -40,11 +40,8 @@ net::awaitable<void> Server::do_accept()
             std::println(stderr, "Accept error: {}",ec.message());
             continue;
         }
-        
-        auto ep = sock.remote_endpoint();
-        std::string id = std::format("{}:{}",ep.address().to_string(),std::to_string(ep.port()));
-        
-        auto conn = std::make_shared<Connection>(std::move(sock), this);
+        std::string id = std::format("{}",sock);
+        auto conn = std::make_shared<Connection>(std::move(sock), this, id);
         connections[id] = conn;
         
         conn->start();

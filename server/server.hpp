@@ -8,11 +8,13 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <deque>
 #include <cstddef>
 #include <span>
 #include <functional>
 #include <optional>
 #include <expected>
+#include <bit>
 
 #include <print>
 #include <algorithm>
@@ -97,7 +99,8 @@ class Connection : public std::enable_shared_from_this<Connection>
 {
 
 public:
-    Connection(tcp::socket sock, Server* srv);
+    Connection(tcp::socket, Server*, std::string);
+    ~Connection();
     void start();
     void send(const Msg& msg);
     std::string_view get_id() const 
@@ -115,6 +118,36 @@ private:
     std::string id;
     std::vector<std::byte> read_buf;
     std::vector<std::byte> write_buf;
-    std::vector<Msg> write_queue;
+    std::deque<Msg> write_queue;
     bool write_in_progress = false;
 };
+
+template<>
+struct std::formatter<tcp::socket>
+{
+    constexpr auto parse(std::format_parse_context& fpc)
+    {
+        return fpc.begin();
+    }
+
+    auto format(const tcp::socket& socket,std::format_context& fc) const
+    {
+        return std::format_to(fc.out(),"{}:{}",socket.remote_endpoint().address().to_string(),
+        std::to_string(socket.remote_endpoint().port()));
+    }
+};
+
+namespace Hibiscus
+{
+    constexpr auto endify(std::integral auto i)
+    {
+        if constexpr(std::endian::native == std::endian::little)
+        {
+            return std::byteswap(i);
+        }
+        else
+        {
+            return i;
+        }
+    }
+}
