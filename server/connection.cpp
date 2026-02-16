@@ -1,10 +1,13 @@
 #include "server.hpp"
+#include "helper.hpp"
+#include <bit>
 
 Connection::Connection(tcp::socket sock, Server* srv, std::string id)
     : socket(std::move(sock))
     , server(srv)
     , write_in_progress(false)
     , id(id)
+    , state(ConnState::Connected) // Last to initialize, definitely established without exception
 {
     std::println("Connection established with id = {}",id);
 }
@@ -41,7 +44,7 @@ net::awaitable<void> Connection::read_header()
         len < 5 || len > 1024 * 1024  //invalid size(Not-a-msg / anti-DoS)
     )
     {
-        
+        close(std::format("Length verification error!!!"));
         server->remove_connection(id);
         co_return;
     }
@@ -51,6 +54,13 @@ net::awaitable<void> Connection::read_header()
 
 net::awaitable<void> Connection::read_body(uint32_t len)
 {
+    using Hibiscus::to_bytes;
+
+    auto decrypt = [](const Msg&) -> std::optional<Msg>
+    {
+        return *Msg::create(Hibiscus::to_bytes("Encrypted \"ni hao\""),MsgType::Broadcast);
+    };
+
     read_buf.resize(len);   
 
     if (auto [ec, n] = co_await net::async_read(
@@ -71,8 +81,67 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         co_return;
     }
     
-    server->get_router()->route(shared_from_this(), *msg);
+    switch(static_cast<MsgType>(msg->type))
+    {
+    using namespace Hibiscus;
+
+    case MsgType::Handshake:
+        switch(this->state)
+        {
+        case ConnState::Established:
+            close("Invalid state: handshake already completed");
+            co_return;
+        case ConnState::Handshaking:
+            //Verify derived shared key is OK
+
+            //...
+            if(false)
+            {
+                close("Derived key verification failed");
+                co_return;
+            }
+
+            this->state = ConnState::Established;
+            break;
+        case ConnState::Connected:
+            //Initialize shared key derivation
+            //Get client-side pubkey, send server-side pubkey(DH key exchange)
+            send(*Msg::create(to_bytes("encrypted key"),MsgType::Encrypted));
+            this->state = ConnState::Handshaking;
+            break;
+            
+        }
+        break;
+
+    case MsgType::Encrypted:
+
+        if(this->state != ConnState::Established)
+        {
+            close("Invalid state: encrypted connection not yet established");
+            co_return;
+        }
+
+        if(auto decrypted = decrypt(*msg);!decrypted)
+        {
+            send(*Msg::create(Hibiscus::to_bytes("Decryption error"),MsgType::Broadcast));
+        }
+        else
+        {
+            server->get_router()->route(shared_from_this(), *decrypted);
+        }
+        break;
     
+    case MsgType::Command:
+    [[fallthrough]];
+    case MsgType::Broadcast:
+        close("Invalid argument - pass command/broadcast in encrypted payload after handshake");
+        co_return;
+
+    default:
+        close(std::format("Invalid message type {}",msg->type));
+        co_return;
+    }
+
     co_await read_header();
 }
 
@@ -111,7 +180,7 @@ net::awaitable<void> Connection::write()
             net::as_tuple(net::use_awaitable));
             ec)
         {
-            server->remove_connection(id);
+            close("Pipe writing error");
             co_return;
         }
         
@@ -119,4 +188,12 @@ net::awaitable<void> Connection::write()
     }
     
     write_in_progress = false;
+}
+
+void Connection::close(std::string_view err)
+{
+    using namespace Hibiscus;
+
+    send(Msg::create(to_bytes(err), MsgType::Broadcast).value_or(unknown_error_msg()));
+    server->remove_connection(id);
 }

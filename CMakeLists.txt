@@ -9,4 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Boost 1.82 REQUIRED COMPONENTS system)
 find_package(Threads REQUIRED)
 
+include_directories(${CMAKE_SOURCE_DIR}/include)
+
+add_subdirectory(Hibiscus)
 add_subdirectory(server)

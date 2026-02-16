@@ -1,4 +1,5 @@
 #include "server.hpp"
+#include "helper.hpp"
 #include <ranges>
 #include <algorithm>
 

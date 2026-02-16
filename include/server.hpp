@@ -20,12 +20,22 @@
 #include <algorithm>
 #include <ranges>
 
+// #include <liboqs-cpp/oqs_cpp.hpp>
+
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
 
 class Connection;
 class Server;
 class Router;
+
+enum class ConnState: uint8_t
+{
+    Connected,
+    Handshaking,
+    Established,
+    //No closed! (awa)
+};
 
 enum class MsgType : uint8_t
 {
@@ -52,7 +62,7 @@ struct Msg
     static constexpr size_t max_len = 1024 * 1024;
     
     static std::expected<Msg,errc> parse(std::span<const std::byte>); //Make Msg from parsed data
-    static std::expected<Msg,errc> create(std::span<const std::byte>, MsgType = MsgType::Handshake); //Make Msg from raw data
+    static std::expected<Msg,errc> create(std::span<const std::byte>, MsgType = MsgType::Broadcast); //Make Msg from raw data
     payload_t serialize() const;
 };
 
@@ -103,11 +113,11 @@ public:
     ~Connection();
     void start();
     void send(const Msg& msg);
-    std::string_view get_id() const 
-    { 
-        return id; 
-    }
+    std::string_view get_id() const { return id; }
+    ConnState getstate() const {return state;}
+    void setstate(ConnState newstate) {state = newstate;}
 
+    void close(std::string_view err = "");
 private:
     net::awaitable<void> read_header();
     net::awaitable<void> read_body(uint32_t len);
@@ -119,6 +129,8 @@ private:
     std::vector<std::byte> read_buf;
     std::vector<std::byte> write_buf;
     std::deque<Msg> write_queue;
+
+    ConnState state;
     bool write_in_progress = false;
 };
 
@@ -137,17 +149,3 @@ struct std::formatter<tcp::socket>
     }
 };
 
-namespace Hibiscus
-{
-    constexpr auto endify(std::integral auto i)
-    {
-        if constexpr(std::endian::native == std::endian::little)
-        {
-            return std::byteswap(i);
-        }
-        else
-        {
-            return i;
-        }
-    }
-}

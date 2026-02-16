@@ -1,3 +1,5 @@
+find_library(OQS_LIB oqs REQUIRED PATHS /usr/local/lib)
+
 add_executable(server
     main.cpp
     server.cpp
@@ -7,10 +9,14 @@ add_executable(server
 )
 
 target_include_directories(server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(server PRIVATE /usr/local/include)
+
 
 target_link_libraries(server
     Boost::system
     Threads::Threads
+    ${OQS_LIB}
+    Hibiscus
 )
 
 set_target_properties(server PROPERTIES
