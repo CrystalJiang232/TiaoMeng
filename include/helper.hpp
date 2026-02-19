@@ -57,8 +57,5 @@ namespace Hibiscus
         std::ranges::to<std::vector<std::byte>>();
     }
 
-    Msg get_err(std::string_view errstr); //Fallback enabled
-    
-    // Decrypt message using session key (placeholder - implement actual AES-GCM or similar)
-    std::optional<Msg> decrypt(const Msg& encrypted_msg, std::span<const uint8_t> key);
+    Msg get_err(std::string_view errstr);
 }

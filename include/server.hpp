@@ -130,6 +130,7 @@ public:
     ~Connection() noexcept;
     void start();
     void send(const Msg& msg);
+    void send_encrypted(const Msg& msg);
     std::string_view get_id() const { return id; }
     ConnState getstate() const {return state;}
     void setstate(ConnState newstate) {state = newstate;}

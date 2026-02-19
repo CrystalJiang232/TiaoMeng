@@ -17,6 +17,22 @@ Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id)
 
 Connection::~Connection() noexcept
 {
+    if (ss_local)
+    {
+        secure_clear(*ss_local);
+    }
+    if (ss_remote)
+    {
+        secure_clear(*ss_remote);
+    }
+    if (ss_A)
+    {
+        secure_clear(*ss_A);
+    }
+    if (kp)
+    {
+        secure_clear(kp->secret_key);
+    }
     sess.clear();
     std::println("Disconnected with id = {}!", id);
 }
@@ -197,7 +213,10 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
             auto auth_msg = Msg::make(auth_data, MsgType::Encrypted);
             if (auth_msg)
             {
-                auto decrypted = decrypt(*auth_msg, sess.key());
+                auto decrypted = sess.decrypt(std::vector<uint8_t>(
+                    reinterpret_cast<const uint8_t*>(auth_msg->payload.data()),
+                    reinterpret_cast<const uint8_t*>(auth_msg->payload.data()) + auth_msg->payload.size()
+                ));
                 if (decrypted)
                 {
                     std::println("Auth received");
@@ -250,15 +269,31 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
         co_return;
     }
 
-    auto decrypted = decrypt(msg, sess.key());
+    std::vector<uint8_t> ct;
+    ct.reserve(msg.payload.size());
+    std::ranges::transform(msg.payload, std::back_inserter(ct), 
+        [](std::byte b){ return static_cast<uint8_t>(b); });
+    
+    auto decrypted = sess.decrypt(ct);
     if (!decrypted)
     {
         send(get_err("Decryption failed"));
+        co_return;
     }
-    else
+    
+    std::vector<std::byte> inner_bytes;
+    inner_bytes.reserve(decrypted->size());
+    std::ranges::transform(*decrypted, std::back_inserter(inner_bytes),
+        [](uint8_t b){ return static_cast<std::byte>(b); });
+    
+    auto inner_msg = Msg::parse(inner_bytes);
+    if (!inner_msg)
     {
-        server->get_router()->route(shared_from_this(), *decrypted);
+        send(get_err("Invalid inner message"));
+        co_return;
     }
+    
+    server->get_router()->route(shared_from_this(), *inner_msg);
 }
 
 void Connection::send(const Msg& msg)
@@ -282,6 +317,44 @@ void Connection::send(const Msg& msg)
                     net::detached);
             }
         });
+}
+
+void Connection::send_encrypted(const Msg& msg)
+{
+    if (!sess.is_established())
+    {
+        return;
+    }
+    
+    std::vector<uint8_t> plaintext;
+    plaintext.reserve(5 + msg.payload.size());
+    uint32_t len = 5 + msg.payload.size();
+    plaintext.push_back(static_cast<uint8_t>((len >> 24) & 0xFF));
+    plaintext.push_back(static_cast<uint8_t>((len >> 16) & 0xFF));
+    plaintext.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
+    plaintext.push_back(static_cast<uint8_t>(len & 0xFF));
+    plaintext.push_back(static_cast<uint8_t>(msg.type));
+    std::ranges::transform(msg.payload, std::back_inserter(plaintext),
+        [](std::byte b){ return static_cast<uint8_t>(b); });
+    
+    auto encrypted = sess.encrypt(plaintext);
+    if (!encrypted)
+    {
+        return;
+    }
+    
+    std::vector<std::byte> payload;
+    payload.reserve(encrypted->size());
+    std::ranges::transform(*encrypted, std::back_inserter(payload),
+        [](uint8_t b){ return static_cast<std::byte>(b); });
+    
+    auto enc_msg = Msg::make(payload, MsgType::Encrypted);
+    if (!enc_msg)
+    {
+        return;
+    }
+    
+    send(*enc_msg);
 }
 
 net::awaitable<void> Connection::write()
