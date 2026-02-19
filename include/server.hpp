@@ -151,10 +151,12 @@ private:
     
     // Bidirectional KEM state
     Kyber768 kem;
-    std::optional<Kyber768::keypair_t> kp;      // Our keypair
-    std::optional<Kyber768::shared_secret_t> ss_local;  // Decapsulated from client's ciphertext
-    std::optional<Kyber768::shared_secret_t> ss_remote; // From encapsulating to client's pubkey
+    std::optional<Kyber768::keypair_t> kp;
+    std::optional<Kyber768::shared_secret_t> ss_local;
+    std::optional<Kyber768::shared_secret_t> ss_remote;
     SessionKey sess;
+    std::optional<std::vector<uint8_t>> client_pk;
+    std::optional<Kyber768::shared_secret_t> ss_A;
 
     tcp::socket socket;
     Server* server;

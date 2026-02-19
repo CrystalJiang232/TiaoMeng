@@ -103,7 +103,13 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
     {
     case ConnState::Connected:
     {
-        // Step 1: Generate our keypair and send public key to client
+        if (msg.payload.size() != Kyber768::public_key_size)
+        {
+            close(std::format("Invalid client public key size: expected {}, got {}",
+                Kyber768::public_key_size, msg.payload.size()));
+            co_return;
+        }
+        
         auto kp_result = kem.generate_keypair();
         if (!kp_result)
         {
@@ -112,46 +118,55 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         }
         kp = std::move(*kp_result);
         
-        // Send our public key
-        auto send_result = Msg::make(
-            to_bytes<uint8_t>(kp->public_key), 
-            MsgType::Handshake
+        std::span<const uint8_t> cpk(
+            reinterpret_cast<const uint8_t*>(msg.payload.data()),
+            Kyber768::public_key_size
         );
+
+
+        auto encap_result = kem.encapsulate(cpk);
+        if (!encap_result)
+        {
+            close("Failed to encapsulate to client public key");
+            co_return;
+        }
+        ss_A = std::move(encap_result->shared_secret);
+        
+        std::vector<uint8_t> payload;
+        payload.reserve(Kyber768::public_key_size + Kyber768::ciphertext_size);
+        
+        std::ranges::copy(kp->public_key, std::back_inserter(payload));
+        std::ranges::copy(encap_result->ciphertext, std::back_inserter(payload));
+
+        auto send_result = Msg::make(to_bytes<uint8_t>(payload), MsgType::Handshake);
         if (!send_result)
         {
-            close("Failed to create handshake message");
+            close(std::format("Failed to create handshake message, errc = {}", std::to_underlying(send_result.error())));
             co_return;
         }
         send(*send_result);
+
         
+        client_pk = std::vector<uint8_t>(cpk.begin(), cpk.end());
         state = ConnState::Handshaking;
         break;
     }
     
     case ConnState::Handshaking:
     {
-        // Step 2: Receive client's public key + ciphertext
-        // Expected format: [client_pubkey (1184 bytes)] [ciphertext (1088 bytes)]
-        constexpr size_t expected_len = Kyber768::public_key_size + Kyber768::ciphertext_size;
-        if (msg.payload.size() != expected_len)
+        if (msg.payload.size() < Kyber768::ciphertext_size)
         {
-            close(std::format("Invalid handshake payload size: expected {}, got {}", 
-                expected_len, msg.payload.size()));
+            close(std::format("Invalid handshake payload size: expected at least {}, got {}",
+                Kyber768::ciphertext_size, msg.payload.size()));
             co_return;
         }
         
-        // Extract client's public key and ciphertext
-        std::span<const uint8_t> client_pk(
-            reinterpret_cast<const uint8_t*>(msg.payload.data()), 
-            Kyber768::public_key_size
-        );
-        std::span<const uint8_t> client_ct(
-            reinterpret_cast<const uint8_t*>(msg.payload.data()) + Kyber768::public_key_size,
+        std::span<const uint8_t> cct(
+            reinterpret_cast<const uint8_t*>(msg.payload.data()),
             Kyber768::ciphertext_size
         );
         
-        // Decapsulate to get the secret from client's encapsulation
-        auto decap_result = kem.decapsulate(client_ct, kp->secret_key);
+        auto decap_result = kem.decapsulate(cct, kp->secret_key);
         if (!decap_result)
         {
             close("Failed to decapsulate client ciphertext");
@@ -159,22 +174,37 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         }
         ss_local = std::move(*decap_result);
         
-        // Encapsulate to client's public key to get our shared secret
-        auto encap_result = kem.encapsulate(client_pk);
+        std::span<const uint8_t> cpk(client_pk->data(), client_pk->size());
+        auto encap_result = kem.encapsulate(cpk);
         if (!encap_result)
         {
-            close("Failed to encapsulate to client pubkey");
+            close("Failed to encapsulate to client public key");
             co_return;
         }
         ss_remote = std::move(encap_result->shared_secret);
         
-        // Combine secrets and complete handshake
         sess.complete_handshake(
             std::span<const uint8_t>(ss_local->data(), ss_local->size()),
-            std::span<const uint8_t>(ss_remote->data(), ss_remote->size())
+            std::span<const uint8_t>(ss_A->data(), ss_A->size())
         );
         
-        // Send our ciphertext back to client
+        if (msg.payload.size() > Kyber768::ciphertext_size)
+        {
+            std::span<const std::byte> auth_data(
+                msg.payload.data() + Kyber768::ciphertext_size,
+                msg.payload.size() - Kyber768::ciphertext_size
+            );
+            auto auth_msg = Msg::make(auth_data, MsgType::Encrypted);
+            if (auth_msg)
+            {
+                auto decrypted = decrypt(*auth_msg, sess.key());
+                if (decrypted)
+                {
+                    std::println("Auth received");
+                }
+            }
+        }
+        
         auto send_result = Msg::make(
             to_bytes<uint8_t>(encap_result->ciphertext),
             MsgType::Handshake
@@ -186,21 +216,22 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         }
         send(*send_result);
         
-        // Clear sensitive key material
         kp->secret_key.clear();
         kp->secret_key.shrink_to_fit();
+        ss_A.reset();
+        client_pk.reset();
         
         state = ConnState::Established;
-        std::println("Connection {}: secure session established", id);
+        std::println("Secure session established with {}", id);
         break;
     }
 
     case ConnState::Established:
-        close("Invalid state: handshake already completed");
+        close("Handshake already completed");
         co_return;
     
     default:
-        close("Invalid state [Unknown] for handshake");
+        close("Invalid state for handshake");
         co_return;
     }
 }
@@ -219,8 +250,6 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
         co_return;
     }
 
-    // TODO: Implement actual decryption using sess.key()
-    // For now, pass through (placeholder)
     auto decrypted = decrypt(msg, sess.key());
     if (!decrypted)
     {
