@@ -20,7 +20,7 @@ int main(int argc, char** argv)
                 std::println("Received cmd from {}: {} bytes", 
                     conn->get_id(), msg.payload.size());
                 
-                if(auto echo = Msg::create(Hibiscus::to_bytes("Command accepted by server"),MsgType::Encrypted);
+                if(auto echo = Msg::make(Hibiscus::to_bytes("Command accepted by server"),MsgType::Encrypted);
                     echo)
                 {
                     conn->send(*echo);

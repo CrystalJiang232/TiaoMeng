@@ -1,4 +1,5 @@
 find_library(OQS_LIB oqs REQUIRED PATHS /usr/local/lib)
+find_package(OpenSSL REQUIRED)
 
 add_executable(server
     main.cpp
@@ -6,6 +7,7 @@ add_executable(server
     connection.cpp
     msg.cpp
     router.cpp
+    cipher.cpp
 )
 
 target_include_directories(server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -16,6 +18,7 @@ target_link_libraries(server
     Boost::system
     Threads::Threads
     ${OQS_LIB}
+    OpenSSL::Crypto
     Hibiscus
 )
 
