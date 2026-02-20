@@ -163,7 +163,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         send(*send_result);
 
         
-        client_pk = std::vector<uint8_t>(cpk.begin(), cpk.end());
+        client_pk = cpk | std::ranges::to<Kyber768::key_t>();
         state = ConnState::Handshaking;
         break;
     }
@@ -190,8 +190,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         }
         ss_local = std::move(*decap_result);
         
-        std::span<const uint8_t> cpk(client_pk->data(), client_pk->size());
-        auto encap_result = kem.encapsulate(cpk);
+        auto encap_result = kem.encapsulate(*client_pk);
         if (!encap_result)
         {
             close("Failed to encapsulate to client public key");
@@ -204,30 +203,13 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
             std::span<const uint8_t>(ss_A->data(), ss_A->size())
         );
         
-        if (msg.payload.size() > Kyber768::ciphertext_size)
-        {
-            std::span<const std::byte> auth_data(
-                msg.payload.data() + Kyber768::ciphertext_size,
-                msg.payload.size() - Kyber768::ciphertext_size
-            );
-            auto auth_msg = Msg::make(auth_data, MsgType::Encrypted);
-            if (auth_msg)
-            {
-                auto decrypted = sess.decrypt(std::vector<uint8_t>(
-                    reinterpret_cast<const uint8_t*>(auth_msg->payload.data()),
-                    reinterpret_cast<const uint8_t*>(auth_msg->payload.data()) + auth_msg->payload.size()
-                ));
-                if (decrypted)
-                {
-                    std::println("Auth received");
-                }
-            }
-        }
+
         
         auto send_result = Msg::make(
             to_bytes<uint8_t>(encap_result->ciphertext),
             MsgType::Handshake
-        );
+        ); //Throwing random stuffs to the client(possibly verify correctness of session key?)  
+        //Actually can remove this part, replace it with a ping-like response
         if (!send_result)
         {
             close("Failed to create handshake response");
@@ -242,6 +224,19 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         
         state = ConnState::Established;
         std::println("Secure session established with {}", id);
+
+                //Possible to have auth data passed along as well.
+        auto auth_data_view = msg.payload | std::views::drop(Kyber768::ciphertext_size);
+        if (auth_data_view)
+        {
+            auto decrypted = sess.decrypt(auth_data_view
+            | std::views::transform(std::to_underlying<std::byte>)
+            | std::ranges::to<std::vector<uint8_t>>());
+            if (decrypted)
+            {
+                std::println("Auth received from {}: {} bytes", id, decrypted->size()); //placeholder for further auth.
+            }
+        }
         break;
     }
 
@@ -269,11 +264,7 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
         co_return;
     }
 
-    std::vector<uint8_t> ct;
-    ct.reserve(msg.payload.size());
-    std::ranges::transform(msg.payload, std::back_inserter(ct), 
-        [](std::byte b){ return static_cast<uint8_t>(b); });
-    
+    auto ct = msg.payload | std::views::transform(std::to_underlying<std::byte>) | std::ranges::to<std::vector<uint8_t>>();
     auto decrypted = sess.decrypt(ct);
     if (!decrypted)
     {
@@ -281,10 +272,9 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
         co_return;
     }
     
-    auto inner_msg = Msg::parse(
-        *decrypted | 
-        std::views::transform(int2byte) | 
-        std::ranges::to<Msg::payload_t>()
+    auto inner_msg = Msg::parse(*decrypted 
+        | std::views::transform(int2byte) 
+        | std::ranges::to<Msg::payload_t>()
     );
     
     if (!inner_msg)
@@ -326,28 +316,14 @@ void Connection::send_encrypted(const Msg& msg)
         return;
     }
     
-    std::vector<uint8_t> plaintext;
-    plaintext.reserve(5 + msg.payload.size());
-    uint32_t len = 5 + msg.payload.size();
-    plaintext.push_back(static_cast<uint8_t>((len >> 24) & 0xFF));
-    plaintext.push_back(static_cast<uint8_t>((len >> 16) & 0xFF));
-    plaintext.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
-    plaintext.push_back(static_cast<uint8_t>(len & 0xFF));
-    plaintext.push_back(static_cast<uint8_t>(msg.type));
-    std::ranges::transform(msg.payload, std::back_inserter(plaintext),
-        [](std::byte b){ return static_cast<uint8_t>(b); });
-    
+    auto plaintext = msg.serialize() | std::views::transform(std::to_underlying<std::byte>) | std::ranges::to<std::vector<uint8_t>>();
     auto encrypted = sess.encrypt(plaintext);
     if (!encrypted)
     {
         return;
     }
     
-    std::vector<std::byte> payload;
-    payload.reserve(encrypted->size());
-    std::ranges::transform(*encrypted, std::back_inserter(payload),
-        [](uint8_t b){ return static_cast<std::byte>(b); });
-    
+    auto payload = *encrypted | std::views::transform(int2byte) | std::ranges::to<Msg::payload_t>();
     auto enc_msg = Msg::make(payload, MsgType::Encrypted);
     if (!enc_msg)
     {

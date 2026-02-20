@@ -6,8 +6,8 @@ namespace Hibiscus
     Msg::payload_t to_bytes(std::string_view sv)
     {
         return sv | 
-            std::views::transform([](char ch){return static_cast<std::byte>(ch);}) |
-            std::ranges::to<std::vector<std::byte>>();
+            std::views::transform([](char ch){ return int2byte(static_cast<uint8_t>(ch)); }) |
+            std::ranges::to<Msg::payload_t>();
     }
     
     Msg::payload_t operator""_b(const char* c,size_t s)

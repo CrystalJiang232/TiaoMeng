@@ -5,8 +5,6 @@
 #include <boost/asio/detached.hpp>
 #include <memory>
 #include <unordered_map>
-#include <string>
-#include <string_view>
 #include <vector>
 #include <deque>
 #include <cstddef>
@@ -21,6 +19,8 @@
 #include <ranges>
 
 #include "cipher.hpp"
+#include "msg.hpp"
+#include "router.hpp"
 
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
@@ -34,54 +34,9 @@ enum class ConnState: uint8_t
     Connected,
     Handshaking,
     Established,
-    Closing,
+    Closing, //Reserved for async I/O: connection closing yet draining messages  
     Rekeying, //Reserved for round session key
-    Error, //Reserved?
-    //No closed! (awa)
 };
-
-enum class MsgType : uint8_t
-{
-    Handshake = 0x01,
-    Encrypted = 0x02,
-    Command = 0x03,
-    Broadcast = 0x04,
-    Error = 0x05
-};
-
-struct Msg
-{
-    using payload_t = std::vector<std::byte>;
-
-    enum class errc
-    {
-        OK = 0,
-        size_err = 1,
-        len_verify_err = 2,
-        type_err = 3
-    };
-
-    uint32_t len;
-    uint8_t type;
-    payload_t payload;
-
-    static constexpr size_t max_len = 1024 * 1024;
-    
-    static std::expected<Msg,errc> parse(std::span<const std::byte>); //Make Msg from parsed data
-    static std::expected<Msg,errc> make(std::span<const std::byte>, MsgType = MsgType::Broadcast); //Make Msg from raw data
-    payload_t serialize() const;
-
-private:
-    struct intern_tag_t {};
-
-    static constexpr inline intern_tag_t intern_tag = {};
-
-    Msg() = default;
-    Msg(intern_tag_t, uint32_t total_len, MsgType type, std::span<const std::byte> span); //No verification or check, equiv to direct member assignment/copy
-    
-    errc validate() const;
-};
-
 
 
 class Server
@@ -106,19 +61,6 @@ private:
 
 };
 
-class Router
-{
-
-public:
-    using Handler = std::function<void(std::shared_ptr<Connection>, const Msg&)>;
-    
-    void register_handler(MsgType type, Handler hdl);
-    void route(std::shared_ptr<Connection> conn, const Msg& msg);
-
-private:
-    std::unordered_map<MsgType, Handler> handlers;
-
-};
 
 
 class Connection : public std::enable_shared_from_this<Connection>
@@ -156,7 +98,7 @@ private:
     std::optional<Kyber768::shared_secret_t> ss_local;
     std::optional<Kyber768::shared_secret_t> ss_remote;
     SessionKey sess;
-    std::optional<std::vector<uint8_t>> client_pk;
+    std::optional<Kyber768::key_t> client_pk;
     std::optional<Kyber768::shared_secret_t> ss_A;
 
     tcp::socket socket;

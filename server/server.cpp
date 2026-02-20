@@ -67,7 +67,7 @@ void Server::broadcast(const Msg& msg, std::string_view exclude_id)
         
         if (conn)
         {
-            conn->send(msg);
+            conn->send_encrypted(msg);
             ++it;
         }
         else

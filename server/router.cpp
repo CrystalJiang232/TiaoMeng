@@ -14,6 +14,6 @@ void Router::route(std::shared_ptr<Connection> conn, const Msg& msg)
     }
     else
     {
-        conn->send(Hibiscus::get_err("Invalid route message type"));
+        conn->send_encrypted(Hibiscus::get_err("Invalid route message type"));
     }
 }
