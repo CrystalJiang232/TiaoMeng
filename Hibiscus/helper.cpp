@@ -21,4 +21,9 @@ namespace Hibiscus
 
         return Msg::make(to_bytes(errstr),MsgType::Error).value_or(decay_msg);
     }
+
+    std::byte int2byte(uint8_t i)
+    {
+        return static_cast<std::byte>(i);
+    }
 }

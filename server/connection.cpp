@@ -281,12 +281,12 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
         co_return;
     }
     
-    std::vector<std::byte> inner_bytes;
-    inner_bytes.reserve(decrypted->size());
-    std::ranges::transform(*decrypted, std::back_inserter(inner_bytes),
-        [](uint8_t b){ return static_cast<std::byte>(b); });
+    auto inner_msg = Msg::parse(
+        *decrypted | 
+        std::views::transform(int2byte) | 
+        std::ranges::to<Msg::payload_t>()
+    );
     
-    auto inner_msg = Msg::parse(inner_bytes);
     if (!inner_msg)
     {
         send(get_err("Invalid inner message"));

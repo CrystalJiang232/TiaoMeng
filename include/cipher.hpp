@@ -32,8 +32,8 @@ public:
 
     Kyber768(const Kyber768&) = delete;
     Kyber768& operator=(const Kyber768&) = delete;
-    Kyber768(Kyber768&&) = default;
-    Kyber768& operator=(Kyber768&&) = default;
+    Kyber768(Kyber768&&) noexcept = default;
+    Kyber768& operator=(Kyber768&&) noexcept = default;
 
     [[nodiscard]] std::optional<keypair_t> generate_keypair() const;
     [[nodiscard]] std::optional<encaps_result_t> encapsulate(std::span<const uint8_t> remote_pk) const;
@@ -105,11 +105,16 @@ public:
     static constexpr size_t key_sz = 32;
     static constexpr size_t nonce_sz = 12;
     static constexpr size_t tag_sz = 16;
+
+    using key_t = std::array<uint8_t, key_sz>;
+    using nonce_t = std::array<uint8_t, nonce_sz>;
+    using tag_t = std::array<uint8_t, tag_sz>;
+    using data_t = std::vector<uint8_t>;
     
     struct ciphertext_t
     {
-        std::vector<uint8_t> data;
-        std::array<uint8_t, tag_sz> tag;
+        data_t data;
+        tag_t tag;
     };
     
     static std::optional<ciphertext_t> encrypt(

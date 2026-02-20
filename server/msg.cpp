@@ -27,7 +27,7 @@ Msg::payload_t Msg::serialize() const
 {
     payload_t ret(len,{});
 
-    Hibiscus::from_int(ret,len);
+    Hibiscus::from_int<std::byte>(ret,len);
     ret[4] = static_cast<std::byte>(type);
 
     std::ranges::copy(payload,ret.data() + 5uz);

@@ -55,22 +55,6 @@ void Server::remove_connection(std::string_view id)
 
 void Server::broadcast(const Msg& msg, std::string_view exclude_id)
 {
-    /*
-    for(auto [id,conn] : connections | std::views::filter([exclude_id](auto&& x){return x.first == exclude_id;}))
-    {
-        if(conn)
-        {
-            conn->send(msg);
-        }
-        else
-        {
-            connections.erase(id);
-            //1. Optimize point: replace key_type with std::string_view entirely to reduce always-reallocate overhead?
-            //2. Does this code works? In other words, would invalidated iterator affect range iterations?
-        }
-    }
-    */
-    
     for (auto it = connections.begin(); it != connections.end(); )
     {
         if (it->first == exclude_id)

@@ -10,6 +10,8 @@
 
 namespace Hibiscus
 {
+    std::byte int2byte(uint8_t);
+
     constexpr auto endify(std::integral auto i)
     {
         if constexpr(std::endian::native == std::endian::little)
@@ -25,8 +27,6 @@ namespace Hibiscus
     Msg::payload_t to_bytes(std::string_view);
     std::vector<std::byte> operator""_b(const char*, size_t);
 
-    Msg unknown_error_msg();
-
     template<std::integral Ty = uint32_t>
     Ty to_int(std::span<const std::byte> from)
     {
@@ -35,11 +35,11 @@ namespace Hibiscus
         return endify(ret);
     }
 
-    template<std::integral Ty = uint32_t>
-    void from_int(std::span<std::byte> to, Ty val)
+    template<class To,std::integral From>
+    void from_int(std::span<To> to, From val)
     {
         val = endify(val);
-        std::memcpy(to.data(),std::addressof(val),sizeof(Ty));
+        std::memcpy(to.data(),std::addressof(val),sizeof(From));
     }
 
     template<class From, class To>
@@ -53,9 +53,11 @@ namespace Hibiscus
     std::vector<std::byte> to_bytes(std::span<std::add_const_t<std::remove_cvref_t<Ty>>> sv)
     {
         return sv | 
-        std::views::transform([](auto&& ch){return static_cast<std::byte>(ch);}) |
+        std::views::transform(int2byte) |
         std::ranges::to<std::vector<std::byte>>();
     }
 
     Msg get_err(std::string_view errstr);
+
+    
 }

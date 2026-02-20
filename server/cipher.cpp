@@ -73,15 +73,15 @@ std::optional<Kyber768::shared_secret_t> Kyber768::decapsulate(
     return shared_secret;
 }
 
-std::array<uint8_t, 32> Kyber768::combine_secrets(
+Kyber768::shared_secret_t Kyber768::combine_secrets(
     std::span<const uint8_t> secret_a, 
     std::span<const uint8_t> secret_b)
 {
     std::array<uint8_t, 64> combined{};
-    std::copy_n(secret_a.begin(), std::min(secret_a.size(), size_t{32}), combined.begin());
-    std::copy_n(secret_b.begin(), std::min(secret_b.size(), size_t{32}), combined.begin() + 32);
+    std::copy_n(secret_a.begin(), std::min(secret_a.size(), shared_secret_size), combined.begin());
+    std::copy_n(secret_b.begin(), std::min(secret_b.size(), shared_secret_size), combined.begin() + shared_secret_size);
 
-    std::array<uint8_t, 32> result{};
+    shared_secret_t result{};
     
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
     if (!ctx) 
@@ -120,48 +120,54 @@ std::optional<std::vector<uint8_t>> SessionKey::encrypt(std::span<const uint8_t>
     }
     
     uint64_t ctr = nonce_ctr.fetch_add(1);
-    std::array<uint8_t, 12> nonce{};
+    crypto::AES256GCM::nonce_t nonce{};
     
-    nonce[4] = static_cast<uint8_t>((ctr >> 56) & 0xFF);
-    nonce[5] = static_cast<uint8_t>((ctr >> 48) & 0xFF);
-    nonce[6] = static_cast<uint8_t>((ctr >> 40) & 0xFF);
-    nonce[7] = static_cast<uint8_t>((ctr >> 32) & 0xFF);
-    nonce[8] = static_cast<uint8_t>((ctr >> 24) & 0xFF);
-    nonce[9] = static_cast<uint8_t>((ctr >> 16) & 0xFF);
-    nonce[10] = static_cast<uint8_t>((ctr >> 8) & 0xFF);
-    nonce[11] = static_cast<uint8_t>(ctr & 0xFF);
-    
+    Hibiscus::from_int<uint8_t>(nonce | std::views::drop(4), ctr);
+
     auto ct_result = crypto::AES256GCM::encrypt(key_, nonce, plaintext);
     if (!ct_result)
     {
         return std::nullopt;
     }
     
-    std::vector<uint8_t> result;
-    result.reserve(12 + ct_result->data.size() + 16);
-    result.insert(result.end(), nonce.begin(), nonce.end());
-    result.insert(result.end(), ct_result->data.begin(), ct_result->data.end());
-    result.insert(result.end(), ct_result->tag.begin(), ct_result->tag.end());
+    std::vector<uint8_t> res;
+    res.reserve(nonce.size() + ct_result->data.size() + ct_result->tag.size());
+
+    auto ist = std::back_inserter(res);
+    std::ranges::copy(nonce, ist);
+    std::ranges::copy(ct_result->data, ist);
+    std::ranges::copy(ct_result->tag, ist);
     
-    return result;
+    return res;
 }
 
 std::optional<std::vector<uint8_t>> SessionKey::decrypt(std::span<const uint8_t> ciphertext)
 {
+    using namespace crypto;
     if (!ready || ciphertext.size() < 28)
     {
         return std::nullopt;
     }
+
+    auto cp_view = ciphertext | std::views::all;
     
-    std::array<uint8_t, 12> nonce{};
-    std::copy_n(ciphertext.begin(), 12, nonce.begin());
+    auto nonce_view = cp_view.subspan(0, AES256GCM::nonce_sz);
+    cp_view = cp_view.subspan(AES256GCM::nonce_sz);
     
-    size_t data_sz = ciphertext.size() - 12 - 16;
-    std::span<const uint8_t> data(ciphertext.data() + 12, data_sz);
+    size_t data_sz = ciphertext.size() - (AES256GCM::nonce_sz + AES256GCM::tag_sz);
+    auto data_view = cp_view.subspan(0, data_sz);
+    cp_view = cp_view.subspan(data_sz);
+
+    auto tag_view = cp_view.subspan(0, AES256GCM::tag_sz);
+    cp_view = cp_view.subspan(AES256GCM::tag_sz);
+    //cp_view should be empty right now
     
-    crypto::AES256GCM::ciphertext_t ct;
-    ct.data.assign(data.begin(), data.end());
-    std::copy_n(ciphertext.end() - 16, 16, ct.tag.begin());
+    AES256GCM::nonce_t nonce{};
+    std::ranges::copy(nonce_view, nonce.begin());
+    
+    AES256GCM::ciphertext_t ct{};
+    ct.data = data_view | std::ranges::to<AES256GCM::data_t>();
+    std::ranges::copy(tag_view, ct.tag.begin());
     
     return crypto::AES256GCM::decrypt(key_, nonce, ct);
 }
@@ -219,7 +225,7 @@ std::optional<AES256GCM::ciphertext_t> AES256GCM::encrypt(
     if (!aad.empty())
     {
         int len;
-        if (EVP_EncryptUpdate(ctx, nullptr, &len, aad.data(), static_cast<int>(aad.size())) != 1)
+        if (EVP_EncryptUpdate(ctx, nullptr, std::addressof(len), aad.data(), static_cast<int>(aad.size())) != 1)
         {
             EVP_CIPHER_CTX_free(ctx);
             return std::nullopt;
@@ -229,15 +235,15 @@ std::optional<AES256GCM::ciphertext_t> AES256GCM::encrypt(
     ciphertext_t result;
     result.data.resize(plaintext.size());
     
-    int len;
-    if (EVP_EncryptUpdate(ctx, result.data.data(), &len, plaintext.data(), static_cast<int>(plaintext.size())) != 1)
+    int len = 0;
+    if (EVP_EncryptUpdate(ctx, result.data.data(), std::addressof(len), plaintext.data(), static_cast<int>(plaintext.size())) != 1)
     {
         EVP_CIPHER_CTX_free(ctx);
         return std::nullopt;
     }
     
-    int final_len;
-    if (EVP_EncryptFinal_ex(ctx, result.data.data() + len, &final_len) != 1)
+    int final_len = 0;
+    if (EVP_EncryptFinal_ex(ctx, result.data.data() + len, std::addressof(final_len)) != 1)
     {
         EVP_CIPHER_CTX_free(ctx);
         return std::nullopt;
@@ -290,8 +296,8 @@ std::optional<std::vector<uint8_t>> AES256GCM::decrypt(
     
     if (!aad.empty())
     {
-        int len;
-        if (EVP_DecryptUpdate(ctx, nullptr, &len, aad.data(), static_cast<int>(aad.size())) != 1)
+        int len = 0;
+        if (EVP_DecryptUpdate(ctx, nullptr, std::addressof(len), aad.data(), static_cast<int>(aad.size())) != 1)
         {
             EVP_CIPHER_CTX_free(ctx);
             return std::nullopt;
@@ -301,8 +307,8 @@ std::optional<std::vector<uint8_t>> AES256GCM::decrypt(
     std::vector<uint8_t> plaintext;
     plaintext.resize(ct.data.size());
     
-    int len;
-    if (EVP_DecryptUpdate(ctx, plaintext.data(), &len, ct.data.data(), static_cast<int>(ct.data.size())) != 1)
+    int len = 0;
+    if (EVP_DecryptUpdate(ctx, plaintext.data(), std::addressof(len), ct.data.data(), static_cast<int>(ct.data.size())) != 1)
     {
         EVP_CIPHER_CTX_free(ctx);
         return std::nullopt;
@@ -314,8 +320,8 @@ std::optional<std::vector<uint8_t>> AES256GCM::decrypt(
         return std::nullopt;
     }
     
-    int final_len;
-    if (EVP_DecryptFinal_ex(ctx, plaintext.data() + len, &final_len) != 1)
+    int final_len = 0;
+    if (EVP_DecryptFinal_ex(ctx, plaintext.data() + len, std::addressof(final_len)) != 1)
     {
         EVP_CIPHER_CTX_free(ctx);
         return std::nullopt;
