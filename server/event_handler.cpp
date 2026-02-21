@@ -13,7 +13,7 @@ EventHandler::EventHandler() : hdls{
     {"logout", handle_logout}
 }
 {
-    
+
 }
 
 void EventHandler::route(std::shared_ptr<Connection> conn, const json::object& request)
@@ -21,21 +21,13 @@ void EventHandler::route(std::shared_ptr<Connection> conn, const json::object& r
     auto it = request.find("action");
     if (it == request.end())
     {
-        conn->send_encrypted(status_msg("Error", "Missing 'action' field"));
-        if (conn->record_failure())
-        {
-            conn->close("Missing action threshold exceeded");
-        }
+        std::ignore = conn->send_error("Missing 'action' field");
         return;
     }
     
     if (!it->value().is_string())
     {
-        conn->send_encrypted(status_msg("Error", "'action' must be string"));
-        if (conn->record_failure())
-        {
-            conn->close("Invalid action format threshold exceeded");
-        }
+        std::ignore = conn->send_error("'action' must be string");
         return;
     }
     
@@ -44,11 +36,7 @@ void EventHandler::route(std::shared_ptr<Connection> conn, const json::object& r
     auto handler_it = hdls.find(action_str);
     if (handler_it == hdls.end())
     {
-        conn->send_encrypted(status_msg("Error", std::format("Unknown action: {}", action_str)));
-        if (conn->record_failure())
-        {
-            conn->close("Unknown action threshold exceeded");
-        }
+        std::ignore = conn->send_error(std::format("Unknown action: {}", action_str));
         return;
     }
     
@@ -57,7 +45,28 @@ void EventHandler::route(std::shared_ptr<Connection> conn, const json::object& r
 
 void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::object& request)
 {
-    (void)request;
+    std::string username, password;
+
+    if (auto ret = Hibiscus::extract_str(request, "username"); !ret)
+    {
+        std::ignore = self->send_error(ret.error()); //Returns anyway, uses std::ignore to bypass [[nodiscard]]
+        return;
+    }
+    else
+    {
+        username = *ret;
+    }
+
+    if (auto ret = Hibiscus::extract_str(request, "password"); !ret)
+    {
+        std::ignore = self->send_error(ret.error());
+        return;
+    }
+    else
+    {
+        password = *ret;
+    }
+    
     
     self->setstate(ConnState::Authenticated);
     self->reset_failures();
@@ -69,11 +78,7 @@ void EventHandler::handle_command(std::shared_ptr<Connection> self, const json::
 {
     if (!self->is_authenticated())
     {
-        self->send_encrypted(status_msg("Error", "Not authenticated"));
-        if (self->record_failure())
-        {
-            self->close("Unauthenticated request threshold exceeded");
-        }
+        std::ignore = self->send_error("Not authenticated");
         return;
     }
     
@@ -85,11 +90,7 @@ void EventHandler::handle_broadcast(std::shared_ptr<Connection> self, const json
 {
     if (!self->is_authenticated())
     {
-        self->send_encrypted(status_msg("Error", "Not authenticated"));
-        if (self->record_failure())
-        {
-            self->close("Unauthenticated request threshold exceeded");
-        }
+        std::ignore = self->send_error("Not authenticated");
         return;
     }
     
@@ -99,7 +100,7 @@ void EventHandler::handle_broadcast(std::shared_ptr<Connection> self, const json
 
 void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::object& request)
 {
-    (void)request;
+    std::ignore = request; //...
     
     if (self->getstate() == ConnState::Authenticated)
     {
@@ -110,6 +111,7 @@ void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::o
     }
     else
     {
-        self->send_encrypted(status_msg("Error", "Not authenticated"));
+        std::ignore = self->send_error("Not authenticated");
+        return;
     }
 }

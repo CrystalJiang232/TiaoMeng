@@ -115,7 +115,8 @@ public:
     bool record_failure() { return fail_tracker.record(); }
     void reset_failures() { fail_tracker.reset(); }
 
-    [[nodiscard]] bool send_error(this Connection& self,std::string_view err = "");
+    void send_raw_error(std::string_view err, CloseMode mode = CloseMode::CancelOthers);
+    [[nodiscard]] bool send_error(std::string_view err, CloseMode mode = CloseMode::CancelOthers);
     
 private:
     net::awaitable<void> read_header();

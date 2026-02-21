@@ -30,12 +30,11 @@ constexpr MsgType make_type(bool encrypted, MsgSemantic semantic)
 }
 
 constexpr MsgType plaintext_handshake = make_type(false, MsgSemantic::Handshake);
+constexpr MsgType plaintext_error     = make_type(false, MsgSemantic::Error);
 constexpr MsgType encrypted_response  = make_type(true, MsgSemantic::Response);
 constexpr MsgType encrypted_request   = make_type(true, MsgSemantic::Request);
 constexpr MsgType encrypted_notify    = make_type(true, MsgSemantic::Notify);
 constexpr MsgType encrypted_error     = make_type(true, MsgSemantic::Error);
-
-constexpr MsgType plaintext_error     = make_type(false, MsgSemantic::Error);
 
 struct Msg
 {

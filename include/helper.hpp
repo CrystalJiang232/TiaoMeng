@@ -57,9 +57,7 @@ namespace Hibiscus
         std::ranges::to<std::vector<std::byte>>();
     }
 
-    Msg get_err(std::string_view errstr);
-
     boost::json::object status_msg(std::string_view status, std::string_view msg);
 
-    
+    std::expected<std::string, std::string> extract_str(const boost::json::object& obj, std::string_view key);
 }

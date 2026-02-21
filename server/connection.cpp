@@ -348,10 +348,9 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
     auto decrypted = sess.decrypt(ct);
     if (!decrypted)
     {
-        send_encrypted(status_msg("Error", "Decryption failed"));
-        if (record_failure())
+        if (send_error("Decryption failed"))
         {
-            close("Decryption failure threshold exceeded");
+            co_return;
         }
         co_return;
     }
@@ -367,20 +366,18 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
     auto parsed = json::parse(json_str, ec);
     if (ec)
     {
-        send_encrypted(status_msg("Error", "Invalid JSON"));
-        if (record_failure())
+        if (send_error("Invalid JSON"))
         {
-            close("JSON parse failure threshold exceeded");
+            co_return;
         }
         co_return;
     }
     
     if (!parsed.is_object())
     {
-        send_encrypted(status_msg("Error", "Request must be JSON object"));
-        if (record_failure())
+        if (send_error("Request must be JSON object"))
         {
-            close("Invalid request format threshold exceeded");
+            co_return;
         }
         co_return;
     }
@@ -545,7 +542,9 @@ net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mod
     case CloseMode::DrainPipe:
         if (!err.empty())
         {
-            write_queue.push_back(get_err(err));
+            static const Msg decay_msg = *Msg::make(Hibiscus::to_bytes("Unknown error"), plaintext_error);
+            auto err_msg = Msg::make(Hibiscus::to_bytes(err), plaintext_error).value_or(decay_msg);
+            write_queue.push_back(err_msg);
             co_await write();
         }
         break;
@@ -553,7 +552,9 @@ net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mod
     case CloseMode::BestEffort:
         if (!err.empty())
         {
-            send(get_err(err));
+            static const Msg decay_msg = *Msg::make(Hibiscus::to_bytes("Unknown error"), plaintext_error);
+            auto err_msg = Msg::make(Hibiscus::to_bytes(err), plaintext_error).value_or(decay_msg);
+            send(err_msg);
         }
         break;
         
@@ -562,7 +563,8 @@ net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mod
         clear_write_queue();
         if (!err.empty())
         {
-            auto err_msg = get_err(err);
+            static const Msg decay_msg = *Msg::make(Hibiscus::to_bytes("Unknown error"), plaintext_error);
+            auto err_msg = Msg::make(Hibiscus::to_bytes(err), plaintext_error).value_or(decay_msg);
             auto buf = err_msg.serialize();
             co_await net::async_write(socket, net::buffer(buf), net::as_tuple(net::use_awaitable));
         }
@@ -586,15 +588,21 @@ void Connection::close(std::string_view err, Connection::CloseMode mode)
         }, net::detached);
 }
 
-//Incomplete function
-bool Connection::send_error(this Connection& self,std::string_view err)
+void Connection::send_raw_error(std::string_view err, CloseMode mode)
 {
-    if(self.has_session_key())
+    static const Msg decay_msg = *Msg::make(Hibiscus::to_bytes("Unknown error"), plaintext_error);
+    auto err_msg = Msg::make(Hibiscus::to_bytes(err), plaintext_error).value_or(decay_msg);
+    send(err_msg);
+    close("", mode);
+}
+
+[[nodiscard]] bool Connection::send_error(std::string_view err, CloseMode mode)
+{
+    send_encrypted(status_msg("Error", err), encrypted_error);
+    if (record_failure())
     {
-        self.send_encrypted(status_msg("Error",err),encrypted_error);
+        close("", mode);
+        return true;
     }
-    else
-    {
-        
-    }
+    return false;
 }
