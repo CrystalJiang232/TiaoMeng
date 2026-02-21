@@ -15,6 +15,7 @@ namespace Hibiscus
         return to_bytes(std::string_view(c,s));
     }
 
+    // Raw error message, non-encrypted
     Msg get_err(std::string_view errstr)
     {
         static const Msg decay_msg = *Msg::make(Hibiscus::to_bytes("Unknown error"), encrypted_error);

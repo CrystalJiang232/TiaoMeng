@@ -6,41 +6,66 @@
 namespace json = boost::json;
 using namespace Hibiscus;
 
-namespace EventHandler
+EventHandler::EventHandler() : hdls{
+    {"auth",handle_auth},
+    {"command", handle_command},
+    {"broadcast", handle_broadcast},
+    {"logout", handle_logout}
+}
 {
+    
+}
 
-void handle_auth(std::shared_ptr<Connection> self, const json::object& request)
+void EventHandler::route(std::shared_ptr<Connection> conn, const json::object& request)
 {
-    (void)request;  // Unused for now - placeholder
-    
-    // Placeholder: Always succeed for now
-    // TODO: Implement actual authentication logic
-    
-    /*
-    // Original auth placeholder code:
-    auto auth_data_view = msg.payload | std::views::drop(Kyber768::ciphertext_size);
-    if (auth_data_view)
+    auto it = request.find("action");
+    if (it == request.end())
     {
-        auto decrypted = sess.decrypt(auth_data_view
-        | std::views::transform(std::to_underlying<std::byte>)
-        | std::ranges::to<std::vector<uint8_t>>());
-        if (decrypted)
+        conn->send_encrypted(status_msg("Error", "Missing 'action' field"));
+        if (conn->record_failure())
         {
-            std::println("Auth received from {}: {} bytes", id, decrypted->size());
+            conn->close("Missing action threshold exceeded");
         }
+        return;
     }
-    */
     
-    // Placeholder: Accept any auth for now
+    if (!it->value().is_string())
+    {
+        conn->send_encrypted(status_msg("Error", "'action' must be string"));
+        if (conn->record_failure())
+        {
+            conn->close("Invalid action format threshold exceeded");
+        }
+        return;
+    }
+    
+    std::string action_str = std::string(it->value().as_string());
+    
+    auto handler_it = hdls.find(action_str);
+    if (handler_it == hdls.end())
+    {
+        conn->send_encrypted(status_msg("Error", std::format("Unknown action: {}", action_str)));
+        if (conn->record_failure())
+        {
+            conn->close("Unknown action threshold exceeded");
+        }
+        return;
+    }
+    
+    handler_it->second(conn, request);
+}
+
+void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::object& request)
+{
+    (void)request;
+    
     self->setstate(ConnState::Authenticated);
     self->reset_failures();
-    
     self->send_encrypted(status_msg("Success", "Authentication successful"));
-    
     std::println("Client {} authenticated", self->get_id());
 }
 
-void handle_command(std::shared_ptr<Connection> self, const json::object& request)
+void EventHandler::handle_command(std::shared_ptr<Connection> self, const json::object& request)
 {
     if (!self->is_authenticated())
     {
@@ -52,28 +77,11 @@ void handle_command(std::shared_ptr<Connection> self, const json::object& reques
         return;
     }
     
-    /*
-    // Original Command handler code (from main.cpp):
-    auto cmd_handler = [](std::shared_ptr<Connection> conn, const Msg& msg)
-    {
-        std::println("Received cmd from {}: {} bytes", 
-            conn->get_id(), msg.payload.size());
-        
-        if(auto echo = Msg::make(Hibiscus::to_bytes("Command accepted by server"),MsgType::Command);
-            echo)
-        {
-            conn->send_encrypted(*echo);
-        }
-    };
-    */
-    
-    // Placeholder implementation
     std::println("Received command from {}: {}", self->get_id(), json::serialize(request));
-    
     self->send_encrypted(status_msg("Success", "Command accepted by server"));
 }
 
-void handle_broadcast(std::shared_ptr<Connection> self, const json::object& request)
+void EventHandler::handle_broadcast(std::shared_ptr<Connection> self, const json::object& request)
 {
     if (!self->is_authenticated())
     {
@@ -85,32 +93,19 @@ void handle_broadcast(std::shared_ptr<Connection> self, const json::object& requ
         return;
     }
     
-    /*
-    // Original Broadcast handler code (from main.cpp):
-    auto broadcast_handler = [&svr](std::shared_ptr<Connection> conn, const Msg& msg)
-    {
-        std::println("Broadcast request from {}: {} bytes",
-            conn->get_id(),msg.payload.size());
-        svr.broadcast(msg, conn->get_id());
-    };
-    */
-    
-    // Placeholder implementation
     std::println("Broadcast request from {}: {}", self->get_id(), json::serialize(request));
-    
-    // TODO: Implement actual broadcast logic
     self->send_encrypted(status_msg("Success", "Broadcast request processed"));
 }
 
-void handle_logout(std::shared_ptr<Connection> self)
+void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::object& request)
 {
+    (void)request;
+    
     if (self->getstate() == ConnState::Authenticated)
     {
         self->setstate(ConnState::Established);
         self->reset_failures();
-        
         self->send_encrypted(status_msg("Success", "Logged out successfully"));
-        
         std::println("Client {} logged out", self->get_id());
     }
     else
@@ -118,5 +113,3 @@ void handle_logout(std::shared_ptr<Connection> self)
         self->send_encrypted(status_msg("Error", "Not authenticated"));
     }
 }
-
-} // namespace EventHandler

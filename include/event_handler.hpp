@@ -2,17 +2,25 @@
 
 #include <boost/json.hpp>
 #include <memory>
+#include <unordered_map>
+#include <functional>
 
 class Connection;
 
-namespace EventHandler
+class EventHandler
 {
-    // Action handlers - implementation in event_handler.cpp
-    // First parameter must be named 'self' per requirement
+public:
+    using Handler = std::function<void(std::shared_ptr<Connection>, const boost::json::object&)>;
     
-    void handle_auth(std::shared_ptr<Connection> self, const boost::json::object& request);
-    void handle_command(std::shared_ptr<Connection> self, const boost::json::object& request);
-    void handle_broadcast(std::shared_ptr<Connection> self, const boost::json::object& request);
-    void handle_logout(std::shared_ptr<Connection> self);
+    EventHandler();
     
-} // namespace EventHandler
+    void route(std::shared_ptr<Connection> conn, const boost::json::object& request);
+    
+    static void handle_auth(std::shared_ptr<Connection> self, const boost::json::object& request);
+    static void handle_command(std::shared_ptr<Connection> self, const boost::json::object& request);
+    static void handle_broadcast(std::shared_ptr<Connection> self, const boost::json::object& request);
+    static void handle_logout(std::shared_ptr<Connection> self, const boost::json::object& request);
+    
+private:
+    std::unordered_map<std::string, Handler> hdls;
+};

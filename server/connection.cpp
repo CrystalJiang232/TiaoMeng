@@ -316,6 +316,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
     }
 
     case ConnState::Established:
+    [[fallthrough]];
     case ConnState::Authenticated:
         close("Handshake already completed");
         co_return;
@@ -389,63 +390,14 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 
 net::awaitable<void> Connection::handle_request(const json::object& request)
 {
-    auto it = request.find("action");
-    if (it == request.end())
-    {
-        send_encrypted(status_msg("Error", "Missing 'action' field"));
-        if (record_failure())
-        {
-            close("Missing action threshold exceeded");
-        }
-        co_return;
-    }
-    
-    if (!it->value().is_string())
-    {
-        send_encrypted(status_msg("Error", "'action' must be string"));
-        if (record_failure())
-        {
-            close("Invalid action format threshold exceeded");
-        }
-        co_return;
-    }
-    
-    std::string action_str = std::string(it->value().as_string());
-    
-    auto self = shared_from_this();
-    
-    if (action_str == "auth")
-    {
-        EventHandler::handle_auth(self, request);
-    }
-    else if (action_str == "command")
-    {
-        EventHandler::handle_command(self, request);
-    }
-    else if (action_str == "broadcast")
-    {
-        EventHandler::handle_broadcast(self, request);
-    }
-    else if (action_str == "logout")
-    {
-        EventHandler::handle_logout(self);
-    }
-    else
-    {
-        send_encrypted(status_msg("Error", std::format("Unknown action: {}", action_str)));
-        if (record_failure())
-        {
-            close("Unknown action threshold exceeded");
-        }
-    }
+    evt_hdl.route(shared_from_this(), request);
+    co_return;
 }
 
 void Connection::send(const Msg& msg)
 {
-    auto self = shared_from_this();
-    
     net::dispatch(socket.get_executor(),
-        [this, self, msg]()
+        [this, self = shared_from_this(), msg]()
         {
             bool empty = write_queue.empty();
             write_queue.push_back(msg);
@@ -529,7 +481,8 @@ net::awaitable<void> Connection::write()
     while (!write_queue.empty())
     {
         auto buf = write_queue.front().serialize();
-        
+        write_queue.pop_front(); //Stack debugging - avoid popping on an 'inadvertently-cleared' deque(cleared by other coroutines' exit) 
+        //Probably atomic operation would be safer?  
         auto [ec, n] = co_await net::async_write(
             socket,
             net::buffer(buf),
@@ -548,7 +501,6 @@ net::awaitable<void> Connection::write()
             co_return;
         }
         
-        write_queue.pop_front();
     }
     
     write_in_progress = false;
@@ -627,56 +579,22 @@ net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mod
 
 void Connection::close(std::string_view err, Connection::CloseMode mode)
 {
-    if (is_pipe_dead())
+    net::co_spawn(socket.get_executor(),
+        [self = shared_from_this(), err, mode]() -> net::awaitable<void>
+        {
+            co_await self->close_async(err, mode);
+        }, net::detached);
+}
+
+//Incomplete function
+bool Connection::send_error(this Connection& self,std::string_view err)
+{
+    if(self.has_session_key())
     {
-        mode = CloseMode::Abort;
-    }
-    
-    if (mode == CloseMode::DrainPipe)
-    {
-        net::co_spawn(socket.get_executor(),
-            [self = shared_from_this(), err, mode]() -> net::awaitable<void>
-            {
-                co_await self->close_async(err, mode);
-            }, net::detached);
+        self.send_encrypted(status_msg("Error",err),encrypted_error);
     }
     else
     {
-        switch (mode)
-        {
-        case CloseMode::BestEffort:
-            if (!err.empty())
-            {
-                send(get_err(err));
-            }
-            server->remove_connection(id);
-            break;
-            
-        case CloseMode::CancelOthers:
-            cancel_all_io();
-            clear_write_queue();
-            if (!err.empty())
-            {
-                auto err_msg = get_err(err);
-                auto buf = err_msg.serialize();
-                net::async_write(socket, net::buffer(buf),
-                    [self = shared_from_this()](auto, auto)
-                    {
-                        self->shutdown();
-                        self->server->remove_connection(self->id);
-                    });
-                return;
-            }
-            server->remove_connection(id);
-            break;
-            
-        case CloseMode::Abort:
-            shutdown();
-            server->remove_connection(id);
-            break;
-            
-        default:
-            break;
-        }
+        
     }
 }

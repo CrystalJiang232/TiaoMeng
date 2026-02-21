@@ -6,7 +6,6 @@ add_executable(server
     server.cpp
     connection.cpp
     msg.cpp
-    router.cpp
     cipher.cpp
     event_handler.cpp
 )

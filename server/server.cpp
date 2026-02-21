@@ -10,7 +10,6 @@
 Server::Server(net::io_context& io, unsigned short port)
     : io_ctx(io)
     , acceptor(io, tcp::endpoint(tcp::v4(), port))
-    , router(std::make_unique<Router>())
 {
     acceptor.set_option(net::socket_base::reuse_address(true));
 }
@@ -85,3 +84,4 @@ void Server::broadcast(const Msg& msg, std::string_view exclude_id)
     }
     
 }
+
