@@ -52,7 +52,7 @@ Msg::errc Msg::validate() const
 }
 
 Msg::Msg(Msg::intern_tag_t, uint32_t ttl, MsgType ty, std::span<const std::byte> sp)
-: len(ttl), type(std::to_underlying(ty)), payload(sp | std::ranges::to<payload_t>())
+: len(ttl), type(ty), payload(sp | std::ranges::to<payload_t>())
 {
 
 }

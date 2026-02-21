@@ -59,5 +59,7 @@ namespace Hibiscus
 
     Msg get_err(std::string_view errstr);
 
+    boost::json::object status_msg(std::string_view status, std::string_view msg);
+
     
 }

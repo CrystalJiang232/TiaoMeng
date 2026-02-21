@@ -8,6 +8,7 @@ add_executable(server
     msg.cpp
     router.cpp
     cipher.cpp
+    event_handler.cpp
 )
 
 target_include_directories(server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -16,6 +17,7 @@ target_include_directories(server PRIVATE /usr/local/include)
 
 target_link_libraries(server
     Boost::system
+    Boost::json
     Threads::Threads
     ${OQS_LIB}
     OpenSSL::Crypto

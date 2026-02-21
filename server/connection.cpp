@@ -1,8 +1,10 @@
 #include "server.hpp"
 #include "helper.hpp"
 #include "cipher.hpp"
+#include "event_handler.hpp"
 #include <bit>
 
+namespace json = boost::json;
 using namespace Hibiscus;
 
 Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id)
@@ -56,9 +58,21 @@ net::awaitable<void> Connection::read_header()
         net::buffer(read_buf, 4),
         net::as_tuple(net::use_awaitable));
     
+    if (ec)
+    {
+        if (ec == net::error::eof || 
+            ec == net::error::connection_reset ||
+            ec == net::error::broken_pipe)
+        {
+            mark_pipe_dead();
+        }
+        close("Read header error", CloseMode::Abort);
+        co_return;
+    }
+    
     uint32_t len = to_int(read_buf);
 
-    if (ec || n != 4 || len < 5 || len > Msg::max_len)
+    if (n != 4 || len < 5 || len > Msg::max_len)
     {
         close("Length verification error");
         co_return;
@@ -71,13 +85,26 @@ net::awaitable<void> Connection::read_body(uint32_t len)
 {
     read_buf.resize(len);   
 
-    if (auto [ec, n] = co_await net::async_read(
+    auto [ec, n] = co_await net::async_read(
         socket,
         net::buffer(read_buf.data() + 4, len - 4),
-        net::as_tuple(net::use_awaitable)); 
-        ec || n != len - 4)
+        net::as_tuple(net::use_awaitable));
+    
+    if (ec)
     {
-        close("Pipe reading error");
+        if (ec == net::error::eof || 
+            ec == net::error::connection_reset ||
+            ec == net::error::broken_pipe)
+        {
+            mark_pipe_dead();
+        }
+        close("Pipe reading error", CloseMode::Abort);
+        co_return;
+    }
+    
+    if (n != len - 4)
+    {
+        close("Incomplete read");
         co_return;
     }
     
@@ -85,28 +112,80 @@ net::awaitable<void> Connection::read_body(uint32_t len)
     if (!m0)
     {
         close("Message parse error");
+        if (record_failure())
+        {
+            close("Too many parse errors");
+        }
         co_return;
     }
     
     auto& msg = *m0;
-    switch(static_cast<MsgType>(msg.type))
+    auto semantic = get_semantic(msg.type);
+    bool encrypted = is_encrypted(msg.type);
+    
+    if (state == ConnState::Connected || state == ConnState::Handshaking)
     {
-    case MsgType::Handshake:
+        if (encrypted)
+        {
+            close("Encrypted messages not allowed during handshake");
+            co_return;
+        }
+        if (semantic != MsgSemantic::Handshake)
+        {
+            close("Only Handshake semantic allowed during handshake");
+            co_return;
+        }
+    }
+    else
+    {
+        if (!encrypted)
+        {
+            close("Plaintext messages not allowed after handshake");
+            if (record_failure())
+            {
+                close("Too many plaintext violations");
+            }
+            co_return;
+        }
+    }
+    
+    switch(semantic)
+    {
+    case MsgSemantic::Handshake:
         co_await handle_handshake(msg);
         break;
         
-    case MsgType::Encrypted:
+    case MsgSemantic::Request:
         co_await handle_encrypted(msg);
         break;
     
-    case MsgType::Command:
-        [[fallthrough]];
-    case MsgType::Broadcast:
-        close("Invalid argument - pass command/broadcast in encrypted payload after handshake");
+    case MsgSemantic::Session:
+        close("Session management not implemented");
+        co_return;
+        
+    case MsgSemantic::Control:
+    case MsgSemantic::Response:
+    case MsgSemantic::Notify:
+    case MsgSemantic::Error:
+        if (record_failure())
+        {
+            close("Invalid message direction");
+        }
+        else
+        {
+            close("Server-to-client semantic received from client");
+        }
         co_return;
 
     default:
-        close(std::format("Invalid message type {}", msg.type));
+        if (record_failure())
+        {
+            close("Too many invalid messages");
+        }
+        else
+        {
+            close(std::format("Invalid message semantic {}", std::to_underlying(semantic)));
+        }
         co_return;
     }
 
@@ -139,7 +218,6 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
             Kyber768::public_key_size
         );
 
-
         auto encap_result = kem.encapsulate(cpk);
         if (!encap_result)
         {
@@ -154,7 +232,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         std::ranges::copy(kp->public_key, std::back_inserter(payload));
         std::ranges::copy(encap_result->ciphertext, std::back_inserter(payload));
 
-        auto send_result = Msg::make(to_bytes<uint8_t>(payload), MsgType::Handshake);
+        auto send_result = Msg::make(to_bytes<uint8_t>(payload), plaintext_handshake);
         if (!send_result)
         {
             close(std::format("Failed to create handshake message, errc = {}", std::to_underlying(send_result.error())));
@@ -162,7 +240,6 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         }
         send(*send_result);
 
-        
         client_pk = cpk | std::ranges::to<Kyber768::key_t>();
         state = ConnState::Handshaking;
         break;
@@ -203,16 +280,27 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
             std::span<const uint8_t>(ss_A->data(), ss_A->size())
         );
         
-
+        auto response = status_msg("ConnectionReady", "Secure channel established, please authenticate");
         
-        auto send_result = Msg::make(
-            to_bytes<uint8_t>(encap_result->ciphertext),
-            MsgType::Handshake
-        ); //Throwing random stuffs to the client(possibly verify correctness of session key?)  
-        //Actually can remove this part, replace it with a ping-like response
+        auto plaintext = json::serialize(response) 
+            | std::views::transform([](char c) { return static_cast<uint8_t>(c); })
+            | std::ranges::to<std::vector<uint8_t>>();
+        
+        auto encrypted = sess.encrypt(plaintext);
+        if (!encrypted)
+        {
+            close("Failed to encrypt handshake response");
+            co_return;
+        }
+        
+        auto payload = *encrypted 
+            | std::views::transform(int2byte) 
+            | std::ranges::to<Msg::payload_t>();
+        
+        auto send_result = Msg::make(payload, encrypted_response);
         if (!send_result)
         {
-            close("Failed to create handshake response");
+            close("Failed to create encrypted response message");
             co_return;
         }
         send(*send_result);
@@ -224,23 +312,11 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         
         state = ConnState::Established;
         std::println("Secure session established with {}", id);
-
-                //Possible to have auth data passed along as well.
-        auto auth_data_view = msg.payload | std::views::drop(Kyber768::ciphertext_size);
-        if (auth_data_view)
-        {
-            auto decrypted = sess.decrypt(auth_data_view
-            | std::views::transform(std::to_underlying<std::byte>)
-            | std::ranges::to<std::vector<uint8_t>>());
-            if (decrypted)
-            {
-                std::println("Auth received from {}: {} bytes", id, decrypted->size()); //placeholder for further auth.
-            }
-        }
         break;
     }
 
     case ConnState::Established:
+    case ConnState::Authenticated:
         close("Handshake already completed");
         co_return;
     
@@ -252,7 +328,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
 
 net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 {
-    if (state != ConnState::Established)
+    if (state != ConnState::Established && state != ConnState::Authenticated)
     {
         close("Invalid state: encrypted connection not yet established");
         co_return;
@@ -264,26 +340,104 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
         co_return;
     }
 
-    auto ct = msg.payload | std::views::transform(std::to_underlying<std::byte>) | std::ranges::to<std::vector<uint8_t>>();
+    auto ct = msg.payload 
+        | std::views::transform(std::to_underlying<std::byte>) 
+        | std::ranges::to<std::vector<uint8_t>>();
+    
     auto decrypted = sess.decrypt(ct);
     if (!decrypted)
     {
-        send(get_err("Decryption failed"));
+        send_encrypted(status_msg("Error", "Decryption failed"));
+        if (record_failure())
+        {
+            close("Decryption failure threshold exceeded");
+        }
         co_return;
     }
     
-    auto inner_msg = Msg::parse(*decrypted 
-        | std::views::transform(int2byte) 
-        | std::ranges::to<Msg::payload_t>()
-    );
-    
-    if (!inner_msg)
+    std::string json_str;
+    json_str.reserve(decrypted->size());
+    for (auto b : *decrypted)
     {
-        send(get_err("Invalid inner message"));
+        json_str.push_back(static_cast<char>(b));
+    }
+    
+    json::error_code ec;
+    auto parsed = json::parse(json_str, ec);
+    if (ec)
+    {
+        send_encrypted(status_msg("Error", "Invalid JSON"));
+        if (record_failure())
+        {
+            close("JSON parse failure threshold exceeded");
+        }
         co_return;
     }
     
-    server->get_router()->route(shared_from_this(), *inner_msg);
+    if (!parsed.is_object())
+    {
+        send_encrypted(status_msg("Error", "Request must be JSON object"));
+        if (record_failure())
+        {
+            close("Invalid request format threshold exceeded");
+        }
+        co_return;
+    }
+    
+    co_await handle_request(parsed.as_object());
+}
+
+net::awaitable<void> Connection::handle_request(const json::object& request)
+{
+    auto it = request.find("action");
+    if (it == request.end())
+    {
+        send_encrypted(status_msg("Error", "Missing 'action' field"));
+        if (record_failure())
+        {
+            close("Missing action threshold exceeded");
+        }
+        co_return;
+    }
+    
+    if (!it->value().is_string())
+    {
+        send_encrypted(status_msg("Error", "'action' must be string"));
+        if (record_failure())
+        {
+            close("Invalid action format threshold exceeded");
+        }
+        co_return;
+    }
+    
+    std::string action_str = std::string(it->value().as_string());
+    
+    auto self = shared_from_this();
+    
+    if (action_str == "auth")
+    {
+        EventHandler::handle_auth(self, request);
+    }
+    else if (action_str == "command")
+    {
+        EventHandler::handle_command(self, request);
+    }
+    else if (action_str == "broadcast")
+    {
+        EventHandler::handle_broadcast(self, request);
+    }
+    else if (action_str == "logout")
+    {
+        EventHandler::handle_logout(self);
+    }
+    else
+    {
+        send_encrypted(status_msg("Error", std::format("Unknown action: {}", action_str)));
+        if (record_failure())
+        {
+            close("Unknown action threshold exceeded");
+        }
+    }
 }
 
 void Connection::send(const Msg& msg)
@@ -309,6 +463,37 @@ void Connection::send(const Msg& msg)
         });
 }
 
+void Connection::send_encrypted(const json::object& json_obj, MsgType type)
+{
+    if (!sess.is_established())
+    {
+        return;
+    }
+    
+    auto json_str = json::serialize(json_obj);
+    auto plaintext = json_str 
+        | std::views::transform([](char c) { return static_cast<uint8_t>(c); })
+        | std::ranges::to<std::vector<uint8_t>>();
+    
+    auto encrypted = sess.encrypt(plaintext);
+    if (!encrypted)
+    {
+        return;
+    }
+    
+    auto payload = *encrypted 
+        | std::views::transform(int2byte) 
+        | std::ranges::to<Msg::payload_t>();
+    
+    auto enc_msg = Msg::make(payload, type);
+    if (!enc_msg)
+    {
+        return;
+    }
+    
+    send(*enc_msg);
+}
+
 void Connection::send_encrypted(const Msg& msg)
 {
     if (!sess.is_established())
@@ -316,15 +501,21 @@ void Connection::send_encrypted(const Msg& msg)
         return;
     }
     
-    auto plaintext = msg.serialize() | std::views::transform(std::to_underlying<std::byte>) | std::ranges::to<std::vector<uint8_t>>();
+    auto plaintext = msg.serialize() 
+        | std::views::transform(std::to_underlying<std::byte>) 
+        | std::ranges::to<std::vector<uint8_t>>();
+    
     auto encrypted = sess.encrypt(plaintext);
     if (!encrypted)
     {
         return;
     }
     
-    auto payload = *encrypted | std::views::transform(int2byte) | std::ranges::to<Msg::payload_t>();
-    auto enc_msg = Msg::make(payload, MsgType::Encrypted);
+    auto payload = *encrypted 
+        | std::views::transform(int2byte) 
+        | std::ranges::to<Msg::payload_t>();
+    
+    auto enc_msg = Msg::make(payload, encrypted_request);
     if (!enc_msg)
     {
         return;
@@ -339,13 +530,21 @@ net::awaitable<void> Connection::write()
     {
         auto buf = write_queue.front().serialize();
         
-        if (auto [ec, n] = co_await net::async_write(
+        auto [ec, n] = co_await net::async_write(
             socket,
             net::buffer(buf),
             net::as_tuple(net::use_awaitable));
-            ec)
+        
+        if (ec)
         {
-            close("Pipe writing error");
+            if (ec == net::error::eof || 
+                ec == net::error::connection_reset ||
+                ec == net::error::broken_pipe)
+            {
+                mark_pipe_dead();
+            }
+            write_in_progress = false;
+            close("Pipe writing error", CloseMode::Abort);
             co_return;
         }
         
@@ -355,19 +554,71 @@ net::awaitable<void> Connection::write()
     write_in_progress = false;
 }
 
+void Connection::cancel_all_io()
+{
+    boost::system::error_code ec;
+    socket.cancel(ec);
+}
+
+void Connection::clear_write_queue()
+{
+    write_queue.clear();
+}
+
+void Connection::shutdown() noexcept
+{
+    try
+    {
+        cancel_all_io();
+        clear_write_queue();
+        
+        boost::system::error_code ec;
+        socket.close(ec);
+    }
+    catch (...)
+    {
+        // noexcept - swallow all exceptions
+    }
+}
+
 net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mode)
 {
-    if(!err.empty())
+    if (is_pipe_dead())
     {
-        if (mode == CloseMode::Definite && !write_queue.empty())
+        mode = CloseMode::Abort;
+    }
+    
+    switch (mode)
+    {
+    case CloseMode::DrainPipe:
+        if (!err.empty())
         {
             write_queue.push_back(get_err(err));
             co_await write();
         }
-        else
+        break;
+        
+    case CloseMode::BestEffort:
+        if (!err.empty())
         {
             send(get_err(err));
         }
+        break;
+        
+    case CloseMode::CancelOthers:
+        cancel_all_io();
+        clear_write_queue();
+        if (!err.empty())
+        {
+            auto err_msg = get_err(err);
+            auto buf = err_msg.serialize();
+            co_await net::async_write(socket, net::buffer(buf), net::as_tuple(net::use_awaitable));
+        }
+        break;
+        
+    case CloseMode::Abort:
+        shutdown();
+        break;
     }
     
     server->remove_connection(id);
@@ -376,20 +627,56 @@ net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mod
 
 void Connection::close(std::string_view err, Connection::CloseMode mode)
 {
-    if (mode == CloseMode::Definite)
+    if (is_pipe_dead())
+    {
+        mode = CloseMode::Abort;
+    }
+    
+    if (mode == CloseMode::DrainPipe)
     {
         net::co_spawn(socket.get_executor(),
-            [self = shared_from_this(), err]() -> net::awaitable<void>
+            [self = shared_from_this(), err, mode]() -> net::awaitable<void>
             {
-                co_await self->close_async(err, CloseMode::Definite);
+                co_await self->close_async(err, mode);
             }, net::detached);
     }
     else
     {
-        if (!err.empty()) 
+        switch (mode)
         {
-            send(get_err(err));
+        case CloseMode::BestEffort:
+            if (!err.empty())
+            {
+                send(get_err(err));
+            }
+            server->remove_connection(id);
+            break;
+            
+        case CloseMode::CancelOthers:
+            cancel_all_io();
+            clear_write_queue();
+            if (!err.empty())
+            {
+                auto err_msg = get_err(err);
+                auto buf = err_msg.serialize();
+                net::async_write(socket, net::buffer(buf),
+                    [self = shared_from_this()](auto, auto)
+                    {
+                        self->shutdown();
+                        self->server->remove_connection(self->id);
+                    });
+                return;
+            }
+            server->remove_connection(id);
+            break;
+            
+        case CloseMode::Abort:
+            shutdown();
+            server->remove_connection(id);
+            break;
+            
+        default:
+            break;
         }
-        server->remove_connection(id);
     }
 }

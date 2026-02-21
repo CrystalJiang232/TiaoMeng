@@ -1,19 +1,20 @@
 #include "server.hpp"
 #include "helper.hpp"
 
+// Router is deprecated - action-based routing is now handled internally by Connection
+// See Connection::handle_request() for the new routing logic
+
 void Router::register_handler(MsgType type, Handler hdl)
 {
-    handlers[type] = std::move(hdl);
+    // Deprecated: Handlers are now managed internally by Connection class
+    (void)type;
+    (void)hdl;
 }
 
 void Router::route(std::shared_ptr<Connection> conn, const Msg& msg)
 {
-    if (auto it = handlers.find(static_cast<MsgType>(msg.type));it != handlers.end())
-    {
-        it->second(std::move(conn), msg);
-    }
-    else
-    {
-        conn->send_encrypted(Hibiscus::get_err("Invalid route message type"));
-    }
+    // Deprecated: Routing is now handled internally by Connection::handle_request()
+    // This function is kept for backward compatibility but does nothing
+    (void)conn;
+    (void)msg;
 }

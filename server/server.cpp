@@ -50,7 +50,15 @@ net::awaitable<void> Server::do_accept()
 
 void Server::remove_connection(std::string_view id)
 {
-    connections.erase(std::string(id)); //implicit conversion?
+    auto it = connections.find(std::string(id));
+    if (it != connections.end()) {
+        // Mark pipe as dead to prevent any new sends
+        it->second->mark_pipe_dead();
+        
+        // Erase from map - this decrements refcount
+        // If coroutines still hold shared_ptr, they complete naturally
+        connections.erase(it);
+    }
 }
 
 void Server::broadcast(const Msg& msg, std::string_view exclude_id)

@@ -17,13 +17,21 @@ namespace Hibiscus
 
     Msg get_err(std::string_view errstr)
     {
-        static const Msg decay_msg = *Msg::make(Hibiscus::to_bytes("Unknown error"), MsgType::Error);
+        static const Msg decay_msg = *Msg::make(Hibiscus::to_bytes("Unknown error"), encrypted_error);
 
-        return Msg::make(to_bytes(errstr),MsgType::Error).value_or(decay_msg);
+        return Msg::make(to_bytes(errstr), encrypted_error).value_or(decay_msg);
     }
 
     std::byte int2byte(uint8_t i)
     {
         return static_cast<std::byte>(i);
+    }
+
+    boost::json::object status_msg(std::string_view status, std::string_view msg)
+    {
+        return boost::json::object{
+            {"status", status},
+            {"message", msg}
+        };
     }
 }

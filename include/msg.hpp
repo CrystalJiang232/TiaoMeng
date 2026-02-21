@@ -4,14 +4,40 @@
 #include <cstdint>
 #include <span>
 
-enum class MsgType : uint8_t
+// MsgType is now a bit-flag format:
+// [7] Encrypted flag: 0=Plaintext (Handshake only), 1=Encrypted (others)
+// [3-0] Semantic: See MsgSemantic enum
+using MsgType = uint8_t;
+
+enum class MsgSemantic : uint8_t
 {
-    Handshake = 0x01,
-    Encrypted = 0x02,
-    Command = 0x03,
-    Broadcast = 0x04,
-    Error = 0x05
+    Control   = 0x00,  // 0: Control messages
+    Handshake = 0x01,  // 1: Handshake messages
+    Session   = 0x02,  // 2: Session management
+    Request   = 0x03,  // 3: Client requests
+    Response  = 0x04,  // 4: Server responses
+    Notify    = 0x05,  // 5: Server notifications
+    Error     = 0x06,  // 6: Error messages
 };
+
+// Bit flag constants
+constexpr MsgType encrypted_flag = 0x80;  // bit 7
+constexpr MsgType semantic_mask  = 0x0F;  // bits 3-0
+
+// constexpr helpers
+constexpr bool is_encrypted(MsgType type) { return (type & encrypted_flag) != 0; }
+constexpr MsgSemantic get_semantic(MsgType type) { return static_cast<MsgSemantic>(type & semantic_mask); }
+constexpr MsgType make_type(bool encrypted, MsgSemantic semantic) 
+{ 
+    return (encrypted ? encrypted_flag : 0) | static_cast<MsgType>(semantic); 
+}
+
+// Convenience constants for common message types
+constexpr MsgType plaintext_handshake = make_type(false, MsgSemantic::Handshake);
+constexpr MsgType encrypted_response  = make_type(true, MsgSemantic::Response);
+constexpr MsgType encrypted_request   = make_type(true, MsgSemantic::Request);
+constexpr MsgType encrypted_notify    = make_type(true, MsgSemantic::Notify);
+constexpr MsgType encrypted_error     = make_type(true, MsgSemantic::Error);
 
 struct Msg
 {
@@ -26,13 +52,13 @@ struct Msg
     };
 
     uint32_t len;
-    uint8_t type;
+    MsgType type;
     payload_t payload;
 
     static constexpr size_t max_len = 1024 * 1024;
     
     static std::expected<Msg,errc> parse(std::span<const std::byte>); //Make Msg from parsed data
-    static std::expected<Msg,errc> make(std::span<const std::byte>, MsgType = MsgType::Broadcast); //Make Msg from raw data
+    static std::expected<Msg,errc> make(std::span<const std::byte>, MsgType type = encrypted_notify); //Make Msg from raw data
     payload_t serialize() const;
 
 private:
