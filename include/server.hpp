@@ -22,8 +22,11 @@
 #include <algorithm>
 #include <ranges>
 
-#include "cipher.hpp"
-#include "msg.hpp"
+#include "fundamentals/types.hpp"
+#include "crypto/kyber768.hpp"
+#include "crypto/session_key.hpp"
+#include "crypto/utils.hpp"
+#include "json_utils.hpp"
 #include "event_handler.hpp"
 
 namespace net = boost::asio;
@@ -133,13 +136,13 @@ private:
     
     EventHandler evt_hdl;
     
-    Kyber768 kem;
-    std::optional<Kyber768::keypair_t> kp;
-    std::optional<Kyber768::shared_secret_t> ss_local;
-    std::optional<Kyber768::shared_secret_t> ss_remote;
-    SessionKey sess;
-    std::optional<Kyber768::key_t> client_pk;
-    std::optional<Kyber768::shared_secret_t> ss_A;
+    crypto::Kyber768 kem;
+    std::optional<crypto::Kyber768::keypair_t> kp;
+    std::optional<crypto::Kyber768::shared_secret_t> ss_local;
+    std::optional<crypto::Kyber768::shared_secret_t> ss_remote;
+    crypto::SessionKey sess;
+    std::optional<crypto::Kyber768::key_t> client_pk;
+    std::optional<crypto::Kyber768::shared_secret_t> ss_A;
 
     tcp::socket socket;
     Server* server;

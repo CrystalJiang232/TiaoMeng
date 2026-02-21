@@ -1,11 +1,15 @@
 #include "server.hpp"
-#include "helper.hpp"
-#include "cipher.hpp"
 #include "event_handler.hpp"
+#include "fundamentals/bytes.hpp"
+#include "fundamentals/msg_serialize.hpp"
 #include <bit>
 
 namespace json = boost::json;
-using namespace Hibiscus;
+using namespace bytes;
+using namespace msg;
+using crypto::secure_clear;
+using crypto::Kyber768;
+using json_utils::status_msg;
 
 Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id)
     : socket(std::move(sock))
@@ -108,7 +112,7 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         co_return;
     }
     
-    auto m0 = Msg::parse(read_buf);
+    auto m0 = msg::parse(read_buf);
     if (!m0)
     {
         close("Message parse error");
@@ -232,7 +236,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         std::ranges::copy(kp->public_key, std::back_inserter(payload));
         std::ranges::copy(encap_result->ciphertext, std::back_inserter(payload));
 
-        auto send_result = Msg::make(to_bytes<uint8_t>(payload), plaintext_handshake);
+        auto send_result = msg::make(to_bytes<uint8_t>(payload), plaintext_handshake);
         if (!send_result)
         {
             close(std::format("Failed to create handshake message, errc = {}", std::to_underlying(send_result.error())));
@@ -297,7 +301,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
             | std::views::transform(int2byte) 
             | std::ranges::to<Msg::payload_t>();
         
-        auto send_result = Msg::make(payload, encrypted_response);
+        auto send_result = msg::make(payload, encrypted_response);
         if (!send_result)
         {
             close("Failed to create encrypted response message");
@@ -434,7 +438,7 @@ void Connection::send_encrypted(const json::object& json_obj, MsgType type)
         | std::views::transform(int2byte) 
         | std::ranges::to<Msg::payload_t>();
     
-    auto enc_msg = Msg::make(payload, type);
+    auto enc_msg = msg::make(payload, type);
     if (!enc_msg)
     {
         return;
@@ -450,7 +454,7 @@ void Connection::send_encrypted(const Msg& msg)
         return;
     }
     
-    auto plaintext = msg.serialize() 
+    auto plaintext = msg::serialize(msg) 
         | std::views::transform(std::to_underlying<std::byte>) 
         | std::ranges::to<std::vector<uint8_t>>();
     
@@ -464,7 +468,7 @@ void Connection::send_encrypted(const Msg& msg)
         | std::views::transform(int2byte) 
         | std::ranges::to<Msg::payload_t>();
     
-    auto enc_msg = Msg::make(payload, encrypted_request);
+    auto enc_msg = msg::make(payload, encrypted_request);
     if (!enc_msg)
     {
         return;
@@ -477,7 +481,7 @@ net::awaitable<void> Connection::write()
 {
     while (!write_queue.empty())
     {
-        auto buf = write_queue.front().serialize();
+        auto buf = msg::serialize(write_queue.front());
         write_queue.pop_front(); //Stack debugging - avoid popping on an 'inadvertently-cleared' deque(cleared by other coroutines' exit) 
         //Probably atomic operation would be safer?  
         auto [ec, n] = co_await net::async_write(
@@ -542,8 +546,8 @@ net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mod
     case CloseMode::DrainPipe:
         if (!err.empty())
         {
-            static const Msg decay_msg = *Msg::make(Hibiscus::to_bytes("Unknown error"), plaintext_error);
-            auto err_msg = Msg::make(Hibiscus::to_bytes(err), plaintext_error).value_or(decay_msg);
+            static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
+            auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
             write_queue.push_back(err_msg);
             co_await write();
         }
@@ -552,8 +556,8 @@ net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mod
     case CloseMode::BestEffort:
         if (!err.empty())
         {
-            static const Msg decay_msg = *Msg::make(Hibiscus::to_bytes("Unknown error"), plaintext_error);
-            auto err_msg = Msg::make(Hibiscus::to_bytes(err), plaintext_error).value_or(decay_msg);
+            static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
+            auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
             send(err_msg);
         }
         break;
@@ -563,9 +567,9 @@ net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mod
         clear_write_queue();
         if (!err.empty())
         {
-            static const Msg decay_msg = *Msg::make(Hibiscus::to_bytes("Unknown error"), plaintext_error);
-            auto err_msg = Msg::make(Hibiscus::to_bytes(err), plaintext_error).value_or(decay_msg);
-            auto buf = err_msg.serialize();
+            static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
+            auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
+            auto buf = msg::serialize(err_msg);
             co_await net::async_write(socket, net::buffer(buf), net::as_tuple(net::use_awaitable));
         }
         break;
@@ -590,8 +594,8 @@ void Connection::close(std::string_view err, Connection::CloseMode mode)
 
 void Connection::send_raw_error(std::string_view err, CloseMode mode)
 {
-    static const Msg decay_msg = *Msg::make(Hibiscus::to_bytes("Unknown error"), plaintext_error);
-    auto err_msg = Msg::make(Hibiscus::to_bytes(err), plaintext_error).value_or(decay_msg);
+    static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
+    auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
     send(err_msg);
     close("", mode);
 }

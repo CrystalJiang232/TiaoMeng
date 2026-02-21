@@ -1,10 +1,10 @@
 #include "event_handler.hpp"
 #include "server.hpp"
-#include "helper.hpp"
+#include "json_utils.hpp"
 #include <print>
 
 namespace json = boost::json;
-using namespace Hibiscus;
+using namespace json_utils;
 
 EventHandler::EventHandler() : hdls{
     {"auth",handle_auth},
@@ -47,7 +47,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
 {
     std::string username, password;
 
-    if (auto ret = Hibiscus::extract_str(request, "username"); !ret)
+    if (auto ret = json_utils::extract_str(request, "username"); !ret)
     {
         std::ignore = self->send_error(ret.error()); //Returns anyway, uses std::ignore to bypass [[nodiscard]]
         return;
@@ -57,7 +57,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
         username = *ret;
     }
 
-    if (auto ret = Hibiscus::extract_str(request, "password"); !ret)
+    if (auto ret = json_utils::extract_str(request, "password"); !ret)
     {
         std::ignore = self->send_error(ret.error());
         return;

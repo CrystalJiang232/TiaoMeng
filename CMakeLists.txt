@@ -11,5 +11,12 @@ find_package(Threads REQUIRED)
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
-add_subdirectory(Hibiscus)
+add_subdirectory(fundamentals)
+add_subdirectory(crypto)
 add_subdirectory(server)
+add_subdirectory(client)
+
+# Note: Hibiscus library has been removed - functionality moved to:
+# - fundamentals/  (Msg types, byte utilities, serialization)
+# - json_utils.hpp (JSON helper functions)
+# - crypto/        (Cryptographic utilities)
