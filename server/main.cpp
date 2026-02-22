@@ -13,10 +13,6 @@ int main(int argc, char** argv)
         net::io_context ic;
         Server svr(ic, port);
 
-        // Note: Handlers are now internal to Connection class
-        // The Router is deprecated in favor of action-based routing
-        // See Connection::handle_request() for the new routing logic
-
         std::println("Server starting on port {}", port);
         svr.start();
     }

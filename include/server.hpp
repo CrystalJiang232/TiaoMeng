@@ -155,6 +155,8 @@ private:
     bool write_in_progress = false;
     FailureTracker fail_tracker;
     std::atomic<bool> dead_pipe{false};
+
+    friend class EventHandler;
 };
 
 

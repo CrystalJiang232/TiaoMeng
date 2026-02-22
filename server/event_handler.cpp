@@ -96,6 +96,8 @@ void EventHandler::handle_broadcast(std::shared_ptr<Connection> self, const json
     
     std::println("Broadcast request from {}: {}", self->get_id(), json::serialize(request));
     self->send_encrypted(status_msg("Success", "Broadcast request processed"));
+
+    (void)self->server; //Placeholder for friend class declaration
 }
 
 void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::object& request)
