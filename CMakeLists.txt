@@ -17,6 +17,21 @@ add_subdirectory(logger)
 add_subdirectory(server)
 add_subdirectory(client)
 
+option(BUILD_TESTING "Build tests" OFF)
+
+if(BUILD_TESTING)
+    include(FetchContent)
+    FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG v3.5.2
+    )
+    FetchContent_MakeAvailable(Catch2)
+    
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
 # Note: Hibiscus library has been removed - functionality moved to:
 # - fundamentals/  (Msg types, byte utilities, serialization)
 # - json_utils.hpp (JSON helper functions)

@@ -12,9 +12,8 @@ int main(int argc, char** argv)
     
     if (argc > 1)
     {
-        uint16_t cli_port = 0;
-        auto [ptr, ec] = std::from_chars(argv[1], argv[1] + strlen(argv[1]), cli_port);
-        if (ec == std::errc{} && cli_port > 0)
+        uint16_t cli_port = 8080;
+        if (auto [ptr, ec] = std::from_chars(argv[1], argv[1] + strlen(argv[1]), cli_port);ec == std::errc{} && cli_port > 0)
         {
             config.set_port(cli_port);
         }

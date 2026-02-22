@@ -7,17 +7,11 @@
 namespace crypto
 {
 
-void SessionKey::init_local(const Kyber768::keypair_t& kp)
-{
-    (void)kp;
-    // Incomplete feature - left as-is per requirements
-}
-
 void SessionKey::complete_handshake(
     std::span<const uint8_t> local_secret,
     std::span<const uint8_t> remote_secret)
 {
-    key_ = Kyber768::combine_secrets(local_secret, remote_secret);
+    ky = Kyber768::combine_secrets(local_secret, remote_secret);
     ready = true;
 }
 
@@ -58,7 +52,7 @@ std::optional<std::vector<uint8_t>> SessionKey::encrypt(std::span<const uint8_t>
         nonce[4 + i] = static_cast<uint8_t>((ctr >> (56 - i * 8)) & 0xFF);
     }
 
-    auto ct_result = AES256GCM::encrypt(key_, nonce, plaintext);
+    auto ct_result = AES256GCM::encrypt(ky, nonce, plaintext);
     if (!ct_result)
     {
         return std::nullopt;
@@ -101,12 +95,12 @@ std::optional<std::vector<uint8_t>> SessionKey::decrypt(std::span<const uint8_t>
     ct.data = data_view | std::ranges::to<AES256GCM::data_t>();
     std::ranges::copy(tag_view, ct.tag.begin());
     
-    return AES256GCM::decrypt(key_, nonce, ct);
+    return AES256GCM::decrypt(ky, nonce, ct);
 }
 
 void SessionKey::clear()
 {
-    secure_clear(key_);
+    secure_clear(ky);
     ready = false;
     nonce_ctr.store(0);
 }

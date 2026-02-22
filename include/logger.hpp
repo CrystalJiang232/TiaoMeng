@@ -21,7 +21,7 @@ public:
                                                                 bool enable_console);
     static void shutdown();
 
-    template<typename... Args>
+    template<class... Args>
     static void debug(std::format_string<Args...> fmt, Args&&... args)
     {
         if (instance().lvl <= Level::Debug)
@@ -30,7 +30,7 @@ public:
         }
     }
 
-    template<typename... Args>
+    template<class... Args>
     static void info(std::format_string<Args...> fmt, Args&&... args)
     {
         if (instance().lvl <= Level::Info)
@@ -39,7 +39,7 @@ public:
         }
     }
 
-    template<typename... Args>
+    template<class... Args>
     static void warn(std::format_string<Args...> fmt, Args&&... args)
     {
         if (instance().lvl <= Level::Warn)
@@ -48,7 +48,7 @@ public:
         }
     }
 
-    template<typename... Args>
+    template<class... Args>
     static void error(std::format_string<Args...> fmt, Args&&... args)
     {
         if (instance().lvl <= Level::Error)
