@@ -17,7 +17,7 @@
     "write_timeout_sec": 30
   },
   "logging": {
-    "level": "info",
+    "level": "debug",
     "file": "",
     "max_size_mb": 100,
     "enable_console": true

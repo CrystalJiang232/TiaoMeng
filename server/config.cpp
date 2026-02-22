@@ -50,7 +50,7 @@ bool get_bool(const json::object& obj, std::string_view key, bool default_val)
 
 } // namespace
 
-std::expected<Config, std::string> Config::load(const std::string& filepath)
+std::expected<Config, std::string> Config::load(const std::string& filepath, std::optional<uint16_t> cli_port)
 {
     std::ifstream file(filepath);
     if (!file.is_open())
@@ -68,22 +68,32 @@ std::expected<Config, std::string> Config::load(const std::string& filepath)
     {
         return std::unexpected(std::format("JSON parse error: {}", e.what()));
     }
-    return parse(jv);
+    auto result = parse(jv);
+    if (result && cli_port.has_value())
+    {
+        result->srv.port = *cli_port;
+    }
+    return result;
 }
 
-Config Config::load_defaults()
+Config Config::load_defaults(std::optional<uint16_t> cli_port)
 {
-    return Config{};
+    Config cfg{};
+    if (cli_port.has_value())
+    {
+        cfg.srv.port = *cli_port;
+    }
+    return cfg;
 }
 
-Config Config::load_or_defaults(const std::string& filepath)
+Config Config::load_or_defaults(const std::string& filepath, std::optional<uint16_t> cli_port)
 {
-    auto result = load(filepath);
+    auto result = load(filepath, cli_port);
     if (result)
     {
         return *result;
     }
-    return load_defaults();
+    return load_defaults(cli_port);
 }
 
 std::expected<Config, std::string> Config::parse(const json::value& jv)

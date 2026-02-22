@@ -5,6 +5,7 @@
 #include "fundamentals/bytes.hpp"
 #include "fundamentals/msg_serialize.hpp"
 #include <bit>
+#include <mutex>
 
 namespace json = boost::json;
 using namespace bytes;
@@ -13,14 +14,16 @@ using crypto::secure_clear;
 using crypto::Kyber768;
 using json_utils::status_msg;
 
-Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const Config& config)
-    : socket(std::move(sock))
+Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const Config& config, net::io_context& io)
+    : strand(net::make_strand(io))
+    , socket(std::move(sock))
     , server(srv)
     , id(std::move(conn_id))
     , state(ConnState::Connected)
     , write_in_progress(false)
     , fail_tracker(config.security().max_failures_before_disconnect)
     , config_(config)
+    , write_mtx()
 {
     LOG_INFO("Connection established with id = {}", id);
 }
@@ -49,22 +52,27 @@ Connection::~Connection() noexcept
 
 void Connection::start()
 {
-    net::co_spawn(socket.get_executor(), 
+    LOG_DEBUG("Connection {} starting read loop", id);
+    net::co_spawn(strand,
         [self = shared_from_this()]() -> net::awaitable<void>
         {
+            LOG_DEBUG("Connection {} read_header coroutine started", self->id);
             co_await self->read_header();
-        }, 
+        },
         net::detached);
 }
 
 net::awaitable<void> Connection::read_header()
 {
+    LOG_DEBUG("Connection {} read_header waiting for 4 bytes", id);
     read_buf.resize(4);
 
     auto [ec, n] = co_await net::async_read(
         socket,
         net::buffer(read_buf, 4),
         net::as_tuple(net::use_awaitable));
+    
+    LOG_DEBUG("Connection {} read_header got {} bytes, ec={}", id, n, ec.message());
     
     if (ec)
     {
@@ -91,12 +99,15 @@ net::awaitable<void> Connection::read_header()
 
 net::awaitable<void> Connection::read_body(uint32_t len)
 {
+    LOG_DEBUG("Connection {} read_body waiting for {} bytes (total len={})", id, len - 4, len);
     read_buf.resize(len);   
 
     auto [ec, n] = co_await net::async_read(
         socket,
         net::buffer(read_buf.data() + 4, len - 4),
         net::as_tuple(net::use_awaitable));
+    
+    LOG_DEBUG("Connection {} read_body got {} bytes, ec={}", id, n, ec.message());
     
     if (ec)
     {
@@ -119,6 +130,7 @@ net::awaitable<void> Connection::read_body(uint32_t len)
     auto m0 = msg::parse(read_buf);
     if (!m0)
     {
+        LOG_DEBUG("Connection {} message parse error, errc={}", id, std::to_underlying(m0.error()));
         if (send_error("Message parse error", CloseMode::CancelOthers))
         {
             co_return;
@@ -129,8 +141,10 @@ net::awaitable<void> Connection::read_body(uint32_t len)
     auto& msg = *m0;
     auto semantic = get_semantic(msg.type);
     bool encrypted = is_encrypted(msg.type);
+    LOG_DEBUG("Connection {} received message: type={}, semantic={}, encrypted={}, payload_size={}", 
+              id, static_cast<int>(msg.type), std::to_underlying(semantic), encrypted, msg.payload.size());
     
-    if (state == ConnState::Connected || state == ConnState::Handshaking)
+    if (state.load(std::memory_order_acquire) == ConnState::Connected || state.load(std::memory_order_acquire) == ConnState::Handshaking)
     {
         if (encrypted)
         {
@@ -155,7 +169,9 @@ net::awaitable<void> Connection::read_body(uint32_t len)
     switch(semantic)
     {
     case MsgSemantic::Handshake:
+        LOG_DEBUG("Connection {} routing to handle_handshake", id);
         co_await handle_handshake(msg);
+        LOG_DEBUG("Connection {} returned from handle_handshake", id);
         break;
         
     case MsgSemantic::Request:
@@ -180,15 +196,18 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         co_return;
     }
 
+    LOG_DEBUG("Connection {} read_body completed, restarting read_header", id);
     co_await read_header();
 }
 
 net::awaitable<void> Connection::handle_handshake(const Msg& msg)
 {
+    LOG_DEBUG("Connection {} handle_handshake entered, current state={}", id, std::to_underlying(state.load()));
     switch(state)
     {
     case ConnState::Connected:
     {
+        LOG_DEBUG("Connection {} handshake state=Connected, payload_size={}", id, msg.payload.size());
         if (msg.payload.size() != Kyber768::public_key_size)
         {
             send_raw_error(std::format("Invalid client public key size: expected {}, got {}",
@@ -197,6 +216,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         }
         
         auto kp_result = kem.generate_keypair();
+        LOG_DEBUG("Connection {} keypair generated, success={}", id, kp_result.has_value());
         if (!kp_result)
         {
             send_raw_error("Failed to generate keypair", CloseMode::CancelOthers);
@@ -210,6 +230,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         );
 
         auto encap_result = kem.encapsulate(cpk);
+        LOG_DEBUG("Connection {} encapsulate success={}", id, encap_result.has_value());
         if (!encap_result)
         {
             send_raw_error("Failed to encapsulate to client public key", CloseMode::CancelOthers);
@@ -224,15 +245,19 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         std::ranges::copy(encap_result->ciphertext, std::back_inserter(payload));
 
         auto send_result = msg::make(to_bytes<uint8_t>(payload), plaintext_handshake);
+        LOG_DEBUG("Connection {} msg::make success={}", id, send_result.has_value());
         if (!send_result)
         {
             send_raw_error(std::format("Failed to create handshake message, errc = {}", std::to_underlying(send_result.error())), CloseMode::CancelOthers);
             co_return;
         }
+        LOG_DEBUG("Connection {} calling send() with handshake response", id);
         send(*send_result);
+        LOG_DEBUG("Connection {} send() returned", id);
 
         client_pk = cpk | std::ranges::to<Kyber768::key_t>();
-        state = ConnState::Handshaking;
+        state.store(ConnState::Handshaking, std::memory_order_release);
+        LOG_DEBUG("Connection {} handshake state changed to Handshaking", id);
         break;
     }
     
@@ -301,7 +326,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         ss_A.reset();
         client_pk.reset();
         
-        state = ConnState::Established;
+        state.store(ConnState::Established, std::memory_order_release);
     LOG_INFO("Secure session established with {}", id);
         break;
     }
@@ -320,7 +345,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
 
 net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 {
-    if (state != ConnState::Established && state != ConnState::Authenticated)
+    if (state.load(std::memory_order_acquire) != ConnState::Established && state.load(std::memory_order_acquire) != ConnState::Authenticated)
     {
         std::ignore = send_error("Invalid state: encrypted connection not yet established", CloseMode::CancelOthers);
         co_return;
@@ -375,21 +400,40 @@ net::awaitable<void> Connection::handle_request(const json::object& request)
 
 void Connection::send(const Msg& msg)
 {
-    net::dispatch(socket.get_executor(),
+    LOG_DEBUG("Connection {} send() called, type={}, len={}", id, static_cast<int>(msg.type), msg.len);
+    net::dispatch(strand,
         [this, self = shared_from_this(), msg]()
         {
-            bool empty = write_queue.empty();
-            write_queue.push_back(msg);
-            
-            if (!write_in_progress && empty)
+            LOG_DEBUG("Connection {} dispatch lambda attempting to lock write_mtx", id);
+            bool should_spawn = false;
             {
-                write_in_progress = true;
-                net::co_spawn(socket.get_executor(),
+                std::lock_guard lock(write_mtx);
+                LOG_DEBUG("Connection {} dispatch lambda acquired write_mtx, queue_size={}", id, write_queue.size());
+                bool was_empty = write_queue.empty();
+                write_queue.push_back(msg);
+                
+                if (!write_in_progress.load() && was_empty)
+                {
+                    write_in_progress.store(true);
+                    should_spawn = true;
+                }
+                LOG_DEBUG("Connection {} dispatch lambda releasing write_mtx", id);
+            }
+            if (should_spawn)
+            {
+                LOG_DEBUG("Connection {} spawning write coroutine", id);
+                net::co_spawn(strand,
                     [this, self]() -> net::awaitable<void>
                     {
+                        LOG_DEBUG("Connection {} write coroutine started", self->id);
                         co_await write();
+                        LOG_DEBUG("Connection {} write coroutine exited", self->id);
                     },
                     net::detached);
+            }
+            else
+            {
+                LOG_DEBUG("Connection {} write coroutine already running or queue not empty", id);
             }
         });
 }
@@ -457,32 +501,53 @@ void Connection::send_encrypted(const Msg& msg)
 
 net::awaitable<void> Connection::write()
 {
-    while (!write_queue.empty())
+    LOG_DEBUG("Connection {} write() entered", id);
+    while (true)
     {
-        auto buf = msg::serialize(write_queue.front());
-        write_queue.pop_front(); //Stack debugging - avoid popping on an 'inadvertently-cleared' deque(cleared by other coroutines' exit) 
-        //Probably atomic operation would be safer?  
+        Msg msg;
+        {
+            LOG_DEBUG("Connection {} write() attempting to lock write_mtx", id);
+            std::lock_guard lock(write_mtx);
+            LOG_DEBUG("Connection {} write() acquired write_mtx", id);
+            if (write_queue.empty())
+            {
+                LOG_DEBUG("Connection {} write queue empty, exiting", id);
+                write_in_progress.store(false);
+                co_return;
+            }
+            msg = std::move(write_queue.front());
+            write_queue.pop_front();
+            LOG_DEBUG("Connection {} write popped message from queue, {} remaining", id, write_queue.size());
+            LOG_DEBUG("Connection {} write() releasing write_mtx", id);
+        }
+        
+        auto buf = msg::serialize(msg);
+        LOG_DEBUG("Connection {} write serializing {} bytes, calling async_write", id, buf.size());
         auto [ec, n] = co_await net::async_write(
             socket,
             net::buffer(buf),
             net::as_tuple(net::use_awaitable));
         
+        LOG_DEBUG("Connection {} async_write completed: n={}, ec={}", id, n, ec.message());
+        
         if (ec)
         {
-            if (ec == net::error::eof || 
+            LOG_DEBUG("Connection {} write error: {}", id, ec.message());
+            if (ec == net::error::eof ||
                 ec == net::error::connection_reset ||
                 ec == net::error::broken_pipe)
             {
                 mark_pipe_dead();
             }
-            write_in_progress = false;
+            {
+                std::lock_guard lock(write_mtx);
+                write_in_progress.store(false);
+            }
             send_raw_error("Pipe writing error", CloseMode::CancelOthers);
             co_return;
         }
-        
+        LOG_DEBUG("Connection {} write successful, {} bytes sent", id, n);
     }
-    
-    write_in_progress = false;
 }
 
 void Connection::cancel_all_io()
@@ -547,15 +612,19 @@ net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mod
 
 void Connection::close(std::string_view err, Connection::CloseMode mode)
 {
-    net::co_spawn(socket.get_executor(),
+    LOG_DEBUG("Connection {} close() called, err='{}', mode={}", id, err, std::to_underlying(mode));
+    net::co_spawn(strand,
         [self = shared_from_this(), err, mode]() -> net::awaitable<void>
         {
+            LOG_DEBUG("Connection {} close coroutine starting", self->id);
             co_await self->close_async(err, mode);
+            LOG_DEBUG("Connection {} close coroutine completed", self->id);
         }, net::detached);
 }
 
 void Connection::send_raw_error(std::string_view err, CloseMode mode)
 {
+    LOG_DEBUG("Connection {} send_raw_error: {}", id, err);
     static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
     auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
     send(err_msg);
@@ -564,6 +633,7 @@ void Connection::send_raw_error(std::string_view err, CloseMode mode)
 
 [[nodiscard("Do not discard send_error's value: caller is responsible for co_return upon this function returning true to prevent connection leakage.")]] bool Connection::send_error(std::string_view err, CloseMode mode)
 {
+    LOG_DEBUG("Connection {} send_error: {}", id, err);
     send_encrypted(status_msg("Error", err), encrypted_error);
     if (record_failure())
     {

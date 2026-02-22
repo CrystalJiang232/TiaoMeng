@@ -21,6 +21,7 @@
 #include <print>
 #include <algorithm>
 #include <ranges>
+#include <shared_mutex>
 
 #include "fundamentals/types.hpp"
 #include "crypto/kyber768.hpp"
@@ -56,6 +57,20 @@ enum class RequestAction : uint8_t
     Logout = 0x04,
 };
 
+class ConnectionsMap
+{
+public:
+    void insert(std::string id, std::shared_ptr<Connection> conn);
+    void erase(std::string_view id);
+    std::shared_ptr<Connection> find(std::string_view id) const;
+    std::vector<std::shared_ptr<Connection>> snapshot() const;
+    size_t size() const;
+
+private:
+    mutable std::shared_mutex mtx;
+    std::unordered_map<std::string, std::shared_ptr<Connection>> conns;
+};
+
 class Server
 {
 public:
@@ -69,7 +84,8 @@ private:
     
     net::io_context& io_ctx;
     tcp::acceptor acceptor;
-    std::unordered_map<std::string, std::shared_ptr<Connection>> connections;
+    net::signal_set signals;
+    ConnectionsMap connections;
     const Config& config_;
 };
 
@@ -87,29 +103,28 @@ public:
     struct FailureTracker
     {
         size_t max_failures = 5;
-        size_t count = 0;
+        std::atomic<size_t> count{0};
         
         explicit FailureTracker(size_t max_fail = 5) : max_failures(max_fail) {}
         
-        bool record() 
-        { 
-            ++count; 
-            return count >= max_failures; 
+        bool record()
+        {
+            return ++count >= max_failures;
         }
         
-        void reset() { count = 0; }
-        bool threshold_exceeded() const { return count >= max_failures; }
+        void reset() { count.store(0, std::memory_order_relaxed); }
+        bool threshold_exceeded() const { return count.load(std::memory_order_relaxed) >= max_failures; }
     };
 
-    Connection(tcp::socket, Server*, std::string, const Config& config);
+    Connection(tcp::socket, Server*, std::string, const Config& config, net::io_context& io);
     ~Connection() noexcept;
     void start();
     void send(const Msg& msg);
     void send_encrypted(const boost::json::object& json_obj, MsgType type = encrypted_response);
     void send_encrypted(const Msg& msg);
     std::string_view get_id() const { return id; }
-    ConnState getstate() const {return state;}
-    void setstate(ConnState newstate) {state = newstate;}
+    ConnState getstate() const { return state.load(std::memory_order_acquire); }
+    void setstate(ConnState newstate) { state.store(newstate, std::memory_order_release); }
 
     void close(std::string_view err = "", CloseMode mode = CloseMode::CancelOthers);
     
@@ -150,15 +165,17 @@ private:
     std::optional<crypto::Kyber768::key_t> client_pk;
     std::optional<crypto::Kyber768::shared_secret_t> ss_A;
 
+    net::strand<net::any_io_executor> strand;
     tcp::socket socket;
     Server* server;
     std::string id;
     std::vector<std::byte> read_buf;
     std::vector<std::byte> write_buf;
+    mutable std::mutex write_mtx;
     std::deque<Msg> write_queue;
 
-    ConnState state;
-    bool write_in_progress = false;
+    std::atomic<ConnState> state;
+    std::atomic<bool> write_in_progress{false};
     FailureTracker fail_tracker;
     std::atomic<bool> dead_pipe{false};
     const Config& config_;

@@ -3,6 +3,7 @@
 #include <boost/json.hpp>
 #include <string>
 #include <expected>
+#include <optional>
 #include <cstdint>
 #include <chrono>
 
@@ -46,11 +47,9 @@ public:
         bool enable_console = true;
     };
 
-    [[nodiscard]] static std::expected<Config, std::string> load(const std::string& filepath);
-    [[nodiscard]] static Config load_defaults();
-    [[nodiscard]] static Config load_or_defaults(const std::string& filepath);
-
-    void set_port(uint16_t port) { srv.port = port; }
+    [[nodiscard]] static std::expected<Config, std::string> load(const std::string& filepath, std::optional<uint16_t> cli_port = std::nullopt);
+    [[nodiscard]] static Config load_defaults(std::optional<uint16_t> cli_port = std::nullopt);
+    [[nodiscard]] static Config load_or_defaults(const std::string& filepath, std::optional<uint16_t> cli_port = std::nullopt);
 
     [[nodiscard]] const ServerCfg& server() const { return srv; }
     [[nodiscard]] const SecurityCfg& security() const { return sec; }
