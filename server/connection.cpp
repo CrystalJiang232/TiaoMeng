@@ -70,7 +70,7 @@ net::awaitable<void> Connection::read_header()
         {
             mark_pipe_dead();
         }
-        close("Read header error", CloseMode::Abort);
+        send_raw_error("Read header error", CloseMode::CancelOthers);
         co_return;
     }
     
@@ -78,7 +78,7 @@ net::awaitable<void> Connection::read_header()
 
     if (n != 4 || len < 5 || len > Msg::max_len)
     {
-        close("Length verification error");
+        send_raw_error("Length verification error", CloseMode::CancelOthers);
         co_return;
     }
 
@@ -102,23 +102,22 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         {
             mark_pipe_dead();
         }
-        close("Pipe reading error", CloseMode::Abort);
+        send_raw_error("Pipe reading error", CloseMode::CancelOthers);
         co_return;
     }
     
     if (n != len - 4)
     {
-        close("Incomplete read");
+        send_raw_error("Incomplete read", CloseMode::CancelOthers);
         co_return;
     }
     
     auto m0 = msg::parse(read_buf);
     if (!m0)
     {
-        close("Message parse error");
-        if (record_failure())
+        if (send_error("Message parse error", CloseMode::CancelOthers))
         {
-            close("Too many parse errors");
+            co_return;
         }
         co_return;
     }
@@ -131,12 +130,12 @@ net::awaitable<void> Connection::read_body(uint32_t len)
     {
         if (encrypted)
         {
-            close("Encrypted messages not allowed during handshake");
+            send_raw_error("Encrypted messages not allowed during handshake", CloseMode::CancelOthers);
             co_return;
         }
         if (semantic != MsgSemantic::Handshake)
         {
-            close("Only Handshake semantic allowed during handshake");
+            send_raw_error("Only Handshake semantic allowed during handshake", CloseMode::CancelOthers);
             co_return;
         }
     }
@@ -144,11 +143,7 @@ net::awaitable<void> Connection::read_body(uint32_t len)
     {
         if (!encrypted)
         {
-            close("Plaintext messages not allowed after handshake");
-            if (record_failure())
-            {
-                close("Too many plaintext violations");
-            }
+            std::ignore = send_error("Plaintext messages not allowed after handshake", CloseMode::CancelOthers);
             co_return;
         }
     }
@@ -164,32 +159,20 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         break;
     
     case MsgSemantic::Session:
-        close("Session management not implemented");
+        std::ignore = send_error("Session management not implemented", CloseMode::CancelOthers);
         co_return;
         
     case MsgSemantic::Control:
+    [[fallthrough]];
     case MsgSemantic::Response:
+    [[fallthrough]];
     case MsgSemantic::Notify:
+    [[fallthrough]];
     case MsgSemantic::Error:
-        if (record_failure())
-        {
-            close("Invalid message direction");
-        }
-        else
-        {
-            close("Server-to-client semantic received from client");
-        }
+        std::ignore = send_error("Invalid message direction: Server-to-client semantic received from client", CloseMode::CancelOthers);
         co_return;
-
     default:
-        if (record_failure())
-        {
-            close("Too many invalid messages");
-        }
-        else
-        {
-            close(std::format("Invalid message semantic {}", std::to_underlying(semantic)));
-        }
+        std::ignore = send_error(std::format("Invalid message semantic {}", std::to_underlying(semantic)), CloseMode::CancelOthers);
         co_return;
     }
 
@@ -204,15 +187,15 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
     {
         if (msg.payload.size() != Kyber768::public_key_size)
         {
-            close(std::format("Invalid client public key size: expected {}, got {}",
-                Kyber768::public_key_size, msg.payload.size()));
+            send_raw_error(std::format("Invalid client public key size: expected {}, got {}",
+                Kyber768::public_key_size, msg.payload.size()), CloseMode::CancelOthers);
             co_return;
         }
         
         auto kp_result = kem.generate_keypair();
         if (!kp_result)
         {
-            close("Failed to generate keypair");
+            send_raw_error("Failed to generate keypair", CloseMode::CancelOthers);
             co_return;
         }
         kp = std::move(*kp_result);
@@ -225,7 +208,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto encap_result = kem.encapsulate(cpk);
         if (!encap_result)
         {
-            close("Failed to encapsulate to client public key");
+            send_raw_error("Failed to encapsulate to client public key", CloseMode::CancelOthers);
             co_return;
         }
         ss_A = std::move(encap_result->shared_secret);
@@ -239,7 +222,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto send_result = msg::make(to_bytes<uint8_t>(payload), plaintext_handshake);
         if (!send_result)
         {
-            close(std::format("Failed to create handshake message, errc = {}", std::to_underlying(send_result.error())));
+            send_raw_error(std::format("Failed to create handshake message, errc = {}", std::to_underlying(send_result.error())), CloseMode::CancelOthers);
             co_return;
         }
         send(*send_result);
@@ -253,8 +236,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
     {
         if (msg.payload.size() < Kyber768::ciphertext_size)
         {
-            close(std::format("Invalid handshake payload size: expected at least {}, got {}",
-                Kyber768::ciphertext_size, msg.payload.size()));
+            send_raw_error(std::format("Invalid handshake payload size: expected at least {}, got {}",
+                Kyber768::ciphertext_size, msg.payload.size()), CloseMode::CancelOthers);
             co_return;
         }
         
@@ -266,7 +249,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto decap_result = kem.decapsulate(cct, kp->secret_key);
         if (!decap_result)
         {
-            close("Failed to decapsulate client ciphertext");
+            send_raw_error("Failed to decapsulate client ciphertext", CloseMode::CancelOthers);
             co_return;
         }
         ss_local = std::move(*decap_result);
@@ -274,7 +257,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto encap_result = kem.encapsulate(*client_pk);
         if (!encap_result)
         {
-            close("Failed to encapsulate to client public key");
+            send_raw_error("Failed to encapsulate to client public key", CloseMode::CancelOthers);
             co_return;
         }
         ss_remote = std::move(encap_result->shared_secret);
@@ -293,7 +276,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto encrypted = sess.encrypt(plaintext);
         if (!encrypted)
         {
-            close("Failed to encrypt handshake response");
+            std::ignore = send_error("Failed to encrypt handshake response", CloseMode::CancelOthers);
             co_return;
         }
         
@@ -304,7 +287,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto send_result = msg::make(payload, encrypted_response);
         if (!send_result)
         {
-            close("Failed to create encrypted response message");
+            std::ignore = send_error("Failed to create encrypted response message", CloseMode::CancelOthers);
             co_return;
         }
         send(*send_result);
@@ -322,11 +305,11 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
     case ConnState::Established:
     [[fallthrough]];
     case ConnState::Authenticated:
-        close("Handshake already completed");
+        std::ignore = send_error("Handshake already completed", CloseMode::CancelOthers);
         co_return;
     
     default:
-        close("Invalid state for handshake");
+        std::ignore = send_error("Invalid state for handshake", CloseMode::CancelOthers);
         co_return;
     }
 }
@@ -335,13 +318,13 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 {
     if (state != ConnState::Established && state != ConnState::Authenticated)
     {
-        close("Invalid state: encrypted connection not yet established");
+        std::ignore = send_error("Invalid state: encrypted connection not yet established", CloseMode::CancelOthers);
         co_return;
     }
 
     if (!sess.is_established())
     {
-        close("Session key not established");
+        std::ignore = send_error("Session key not established", CloseMode::CancelOthers);
         co_return;
     }
 
@@ -352,10 +335,7 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
     auto decrypted = sess.decrypt(ct);
     if (!decrypted)
     {
-        if (send_error("Decryption failed"))
-        {
-            co_return;
-        }
+        std::ignore = send_error("Decryption failed", CloseMode::CancelOthers);
         co_return;
     }
     
@@ -370,19 +350,13 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
     auto parsed = json::parse(json_str, ec);
     if (ec)
     {
-        if (send_error("Invalid JSON"))
-        {
-            co_return;
-        }
+        std::ignore = send_error("Invalid JSON", CloseMode::CancelOthers);
         co_return;
     }
     
     if (!parsed.is_object())
     {
-        if (send_error("Request must be JSON object"))
-        {
-            co_return;
-        }
+        std::ignore = send_error("Request must be JSON object", CloseMode::CancelOthers);
         co_return;
     }
     
@@ -498,7 +472,7 @@ net::awaitable<void> Connection::write()
                 mark_pipe_dead();
             }
             write_in_progress = false;
-            close("Pipe writing error", CloseMode::Abort);
+            send_raw_error("Pipe writing error", CloseMode::CancelOthers);
             co_return;
         }
         
@@ -536,6 +510,8 @@ void Connection::shutdown() noexcept
 
 net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mode)
 {
+    (void)err; // Error message is now sent by caller (send_error/send_raw_error) before calling close
+    
     if (is_pipe_dead())
     {
         mode = CloseMode::Abort;
@@ -544,34 +520,16 @@ net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mod
     switch (mode)
     {
     case CloseMode::DrainPipe:
-        if (!err.empty())
-        {
-            static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
-            auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
-            write_queue.push_back(err_msg);
-            co_await write();
-        }
+        co_await write();
         break;
         
     case CloseMode::BestEffort:
-        if (!err.empty())
-        {
-            static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
-            auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
-            send(err_msg);
-        }
+        // Just let pending writes complete naturally
         break;
         
     case CloseMode::CancelOthers:
         cancel_all_io();
         clear_write_queue();
-        if (!err.empty())
-        {
-            static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
-            auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
-            auto buf = msg::serialize(err_msg);
-            co_await net::async_write(socket, net::buffer(buf), net::as_tuple(net::use_awaitable));
-        }
         break;
         
     case CloseMode::Abort:
@@ -597,10 +555,10 @@ void Connection::send_raw_error(std::string_view err, CloseMode mode)
     static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
     auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
     send(err_msg);
-    close("", mode);
+    close("", mode); // close_async will ignore the empty string
 }
 
-[[nodiscard]] bool Connection::send_error(std::string_view err, CloseMode mode)
+[[nodiscard("Do not discard send_error's value: caller is responsible for co_return upon this function returning true to prevent connection leakage.")]] bool Connection::send_error(std::string_view err, CloseMode mode)
 {
     send_encrypted(status_msg("Error", err), encrypted_error);
     if (record_failure())
