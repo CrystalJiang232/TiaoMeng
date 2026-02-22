@@ -6,6 +6,7 @@ add_executable(server
     server.cpp
     connection.cpp
     event_handler.cpp
+    config.cpp
 )
 
 target_include_directories(server PRIVATE /usr/local/include)

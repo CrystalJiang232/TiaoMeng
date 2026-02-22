@@ -29,6 +29,9 @@
 #include "json_utils.hpp"
 #include "event_handler.hpp"
 
+// Forward declaration
+class Config;
+
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
 
@@ -56,7 +59,7 @@ enum class RequestAction : uint8_t
 class Server
 {
 public:
-    Server(net::io_context& io, unsigned short port);
+    Server(net::io_context& io, const Config& config);
     void start();
     void remove_connection(std::string_view id);
     void broadcast(const Msg& msg, std::string_view exclude_id = "");
@@ -67,6 +70,7 @@ private:
     net::io_context& io_ctx;
     tcp::acceptor acceptor;
     std::unordered_map<std::string, std::shared_ptr<Connection>> connections;
+    const Config& config_;
 };
 
 class Connection : public std::enable_shared_from_this<Connection>
@@ -82,8 +86,10 @@ public:
     
     struct FailureTracker
     {
-        static constexpr size_t max_failures = 5;
+        size_t max_failures = 5;
         size_t count = 0;
+        
+        explicit FailureTracker(size_t max_fail = 5) : max_failures(max_fail) {}
         
         bool record() 
         { 
@@ -95,7 +101,7 @@ public:
         bool threshold_exceeded() const { return count >= max_failures; }
     };
 
-    Connection(tcp::socket, Server*, std::string);
+    Connection(tcp::socket, Server*, std::string, const Config& config);
     ~Connection() noexcept;
     void start();
     void send(const Msg& msg);
@@ -155,6 +161,7 @@ private:
     bool write_in_progress = false;
     FailureTracker fail_tracker;
     std::atomic<bool> dead_pipe{false};
+    const Config& config_;
 
     friend class EventHandler;
 };

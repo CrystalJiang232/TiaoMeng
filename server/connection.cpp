@@ -1,4 +1,5 @@
 #include "server.hpp"
+#include "config.hpp"
 #include "event_handler.hpp"
 #include "fundamentals/bytes.hpp"
 #include "fundamentals/msg_serialize.hpp"
@@ -11,12 +12,14 @@ using crypto::secure_clear;
 using crypto::Kyber768;
 using json_utils::status_msg;
 
-Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id)
+Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const Config& config)
     : socket(std::move(sock))
     , server(srv)
     , id(std::move(conn_id))
     , state(ConnState::Connected)
     , write_in_progress(false)
+    , fail_tracker(config.security().max_failures_before_disconnect)
+    , config_(config)
 {
     std::println("Connection established with id = {}", id);
 }

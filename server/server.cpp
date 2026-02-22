@@ -1,4 +1,5 @@
 #include "server.hpp"
+#include "config.hpp"
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/signal_set.hpp>
@@ -7,9 +8,10 @@
 #include <algorithm>
 #include <ranges>
 
-Server::Server(net::io_context& io, unsigned short port)
+Server::Server(net::io_context& io, const Config& config)
     : io_ctx(io)
-    , acceptor(io, tcp::endpoint(tcp::v4(), port))
+    , acceptor(io, tcp::endpoint(net::ip::make_address(config.server().bind_address), config.server().port))
+    , config_(config)
 {
     acceptor.set_option(net::socket_base::reuse_address(true));
 }
@@ -40,7 +42,7 @@ net::awaitable<void> Server::do_accept()
             continue;
         }
         std::string id = std::format("{}",sock);
-        auto conn = std::make_shared<Connection>(std::move(sock), this, id);
+        auto conn = std::make_shared<Connection>(std::move(sock), this, id, config_);
         connections[id] = conn;
         
         conn->start();

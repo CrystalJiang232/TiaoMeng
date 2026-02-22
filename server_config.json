@@ -1,0 +1,25 @@
+{
+  "server": {
+    "port": 8080,
+    "bind_address": "0.0.0.0",
+    "max_connections": 1000,
+    "max_message_size": 1048576
+  },
+  "security": {
+    "max_failures_before_disconnect": 5,
+    "session_timeout_sec": 3600,
+    "key_rotation_interval_sec": 86400,
+    "require_client_auth": false
+  },
+  "timeouts": {
+    "handshake_timeout_sec": 30,
+    "read_timeout_sec": 300,
+    "write_timeout_sec": 30
+  },
+  "logging": {
+    "level": "info",
+    "file": "",
+    "max_size_mb": 100,
+    "enable_console": true
+  }
+}
