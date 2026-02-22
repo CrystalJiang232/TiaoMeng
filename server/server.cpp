@@ -1,12 +1,9 @@
 #include "server.hpp"
 #include "config.hpp"
+#include "logger.hpp"
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/signal_set.hpp>
-#include <iostream>
-#include <print>
-#include <algorithm>
-#include <ranges>
 
 Server::Server(net::io_context& io, const Config& config)
     : io_ctx(io)
@@ -38,7 +35,7 @@ net::awaitable<void> Server::do_accept()
         
         if (ec)
         {
-            std::println(stderr, "Accept error: {}",ec.message());
+            LOG_ERROR("Accept error: {}", ec.message());
             continue;
         }
         std::string id = std::format("{}",sock);

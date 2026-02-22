@@ -1,7 +1,7 @@
 #include "event_handler.hpp"
 #include "server.hpp"
 #include "json_utils.hpp"
-#include <print>
+#include "logger.hpp"
 
 namespace json = boost::json;
 using namespace json_utils;
@@ -71,7 +71,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
     self->setstate(ConnState::Authenticated);
     self->reset_failures();
     self->send_encrypted(status_msg("Success", "Authentication successful"));
-    std::println("Client {} authenticated", self->get_id());
+    LOG_INFO("Client {} authenticated", self->get_id());
 }
 
 void EventHandler::handle_command(std::shared_ptr<Connection> self, const json::object& request)
@@ -82,7 +82,7 @@ void EventHandler::handle_command(std::shared_ptr<Connection> self, const json::
         return;
     }
     
-    std::println("Received command from {}: {}", self->get_id(), json::serialize(request));
+    LOG_INFO("Received command from {}: {}", self->get_id(), json::serialize(request));
     self->send_encrypted(status_msg("Success", "Command accepted by server"));
 }
 
@@ -94,7 +94,7 @@ void EventHandler::handle_broadcast(std::shared_ptr<Connection> self, const json
         return;
     }
     
-    std::println("Broadcast request from {}: {}", self->get_id(), json::serialize(request));
+    LOG_INFO("Broadcast request from {}: {}", self->get_id(), json::serialize(request));
     self->send_encrypted(status_msg("Success", "Broadcast request processed"));
 
     (void)self->server; //Placeholder for friend class declaration
@@ -109,7 +109,7 @@ void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::o
         self->setstate(ConnState::Established);
         self->reset_failures();
         self->send_encrypted(status_msg("Success", "Logged out successfully"));
-        std::println("Client {} logged out", self->get_id());
+        LOG_INFO("Client {} logged out", self->get_id());
     }
     else
     {

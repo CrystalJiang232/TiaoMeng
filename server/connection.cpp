@@ -1,5 +1,6 @@
 #include "server.hpp"
 #include "config.hpp"
+#include "logger.hpp"
 #include "event_handler.hpp"
 #include "fundamentals/bytes.hpp"
 #include "fundamentals/msg_serialize.hpp"
@@ -21,7 +22,7 @@ Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const
     , fail_tracker(config.security().max_failures_before_disconnect)
     , config_(config)
 {
-    std::println("Connection established with id = {}", id);
+    LOG_INFO("Connection established with id = {}", id);
 }
 
 Connection::~Connection() noexcept
@@ -43,7 +44,7 @@ Connection::~Connection() noexcept
         secure_clear(kp->secret_key);
     }
     sess.clear();
-    std::println("Disconnected with id = {}!", id);
+    LOG_INFO("Disconnected with id = {}", id);
 }
 
 void Connection::start()
@@ -301,7 +302,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         client_pk.reset();
         
         state = ConnState::Established;
-        std::println("Secure session established with {}", id);
+    LOG_INFO("Secure session established with {}", id);
         break;
     }
 

@@ -1,5 +1,6 @@
 #include "server.hpp"
 #include "config.hpp"
+#include "logger.hpp"
 
 #include <print>
 #include <cstring>
@@ -7,11 +8,8 @@
 
 int main(int argc, char** argv)
 {
-    // Load configuration from working directory
-    // CLI port argument overrides config file if provided
     auto config = Config::load_or_defaults("server_config.json");
     
-    // CLI override for port (backward compatible)
     if (argc > 1)
     {
         uint16_t cli_port = 0;
@@ -22,22 +20,30 @@ int main(int argc, char** argv)
         }
     }
 
+    auto log_cfg = config.logging();
+    if (auto result = Logger::init(log_cfg.level, log_cfg.file, log_cfg.max_size_mb, log_cfg.enable_console);
+        !result)
+    {
+        std::println(stderr, "Failed to initialize logger: {}", result.error());
+        return 1;
+    }
+
     try
     {
         net::io_context ic;
         Server svr(ic, config);
 
-        std::println("Server starting on {}:{}", 
-                     config.server().bind_address, 
-                     config.server().port);
+        LOG_INFO("Server starting on {}:{}", config.server().bind_address, config.server().port);
         svr.start();
     }
     catch (const std::exception& e)
     {
-        std::println(stderr, "Fatal: {}", e.what());
+        LOG_ERROR("Fatal: {}", e.what());
+        Logger::shutdown();
         return 1;
     }
 
-    std::println("Server exiting...");
+    LOG_INFO("Server exiting...");
+    Logger::shutdown();
     return 0;
 }

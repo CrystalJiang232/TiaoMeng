@@ -18,6 +18,7 @@ target_link_libraries(server
     Threads::Threads
     crypto
     fundamentals
+    logger
 )
 
 set_target_properties(server PROPERTIES
