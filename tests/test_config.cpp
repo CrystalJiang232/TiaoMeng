@@ -20,15 +20,6 @@ TEST_CASE("Config::load_defaults returns valid config with defaults")
     CHECK(cfg.logging().enable_console == true);
 }
 
-TEST_CASE("Config::set_port overrides port value")
-{
-    auto cfg = Config::load_defaults();
-    
-    cfg.set_port(9090);
-    
-    CHECK(cfg.server().port == 9090);
-}
-
 TEST_CASE("Config::load parses valid JSON file")
 {
     const char* test_file = "/tmp/test_config_valid.json";

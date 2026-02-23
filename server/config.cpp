@@ -160,7 +160,7 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
         {
             return std::unexpected(key_rot.error());
         }
-        config.sec.require_client_auth = get_bool(sec, "require_client_auth", false);
+        config.sec.require_client_auth = get_bool(sec, "require_client_auth", true);
     }
     if (auto it = root.find("timeouts"); it != root.end() && it->value().is_object())
     {
@@ -173,7 +173,7 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
         {
             return std::unexpected(hs_to.error());
         }
-        if (auto read_to = get_uint<uint64_t>(to, "read_timeout_sec", 1, 3600, 300); read_to)
+        if (auto read_to = get_uint<uint64_t>(to, "read_timeout_sec", 1, 3600, 30); read_to)
         {
             config.to.read_timeout = std::chrono::seconds(*read_to);
         }
