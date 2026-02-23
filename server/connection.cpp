@@ -90,15 +90,16 @@ void Connection::reset_global_timer(std::chrono::seconds duration)
 
 void Connection::cancel_global_timer()
 {
-    boost::system::error_code ec;
-    global_timer.cancel(ec);
+    global_timer.cancel();
 }
 
 void Connection::on_global_timeout()
 {
+    if (server) server->metrics().timeouts++;
     auto st = state.load(std::memory_order_acquire);
     if (st == ConnState::Connected || st == ConnState::Handshaking)
     {
+        if (server) server->metrics().handshakes_failed++;
         send_raw_error("Handshake timeout", CloseMode::CancelOthers);
     }
     else if (st == ConnState::Established || st == ConnState::Authenticated)
@@ -265,6 +266,9 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         co_return;
     }
     
+    // Track bytes received
+    if (server) server->metrics().bytes_received += len;
+    
     auto m0 = msg::parse(read_buf);
     if (!m0)
     {
@@ -357,6 +361,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         LOG_DEBUG("Connection {} keypair generated, success={}", id, kp_result.has_value());
         if (!kp_result)
         {
+            if (server) server->metrics().handshakes_failed++;
             send_raw_error("Failed to generate keypair", CloseMode::CancelOthers);
             co_return;
         }
@@ -371,6 +376,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         LOG_DEBUG("Connection {} encapsulate success={}", id, encap_result.has_value());
         if (!encap_result)
         {
+            if (server) server->metrics().handshakes_failed++;
             send_raw_error("Failed to encapsulate to client public key", CloseMode::CancelOthers);
             co_return;
         }
@@ -416,6 +422,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto decap_result = kem.decapsulate(cct, kp->secret_key);
         if (!decap_result)
         {
+            if (server) server->metrics().handshakes_failed++;
             send_raw_error("Failed to decapsulate client ciphertext", CloseMode::CancelOthers);
             co_return;
         }
@@ -424,6 +431,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto encap_result = kem.encapsulate(*client_pk);
         if (!encap_result)
         {
+            if (server) server->metrics().handshakes_failed++;
             send_raw_error("Failed to encapsulate to client public key", CloseMode::CancelOthers);
             co_return;
         }
@@ -467,6 +475,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         state.store(ConnState::Established, std::memory_order_release);
         reset_global_timer(config_.security().session_timeout);
         LOG_INFO("Secure session established with {}", id);
+        if (server) server->metrics().handshakes_completed++;
         break;
     }
 
@@ -503,6 +512,7 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
     auto decrypted = sess.decrypt(ct);
     if (!decrypted)
     {
+        if (server) server->metrics().errors++;
         std::ignore = send_error("Decryption failed", CloseMode::CancelOthers);
         co_return;
     }
@@ -533,6 +543,7 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 
 net::awaitable<void> Connection::handle_request(const json::object& request)
 {
+    if (server) server->metrics().messages_received++;
     evt_hdl.route(shared_from_this(), request);
     co_return;
 }
@@ -693,6 +704,12 @@ net::awaitable<void> Connection::write()
             co_return;
         }
         LOG_DEBUG("Connection {} write successful, {} bytes sent", id, result.bytes);
+        
+        // Track bytes and messages sent
+        if (server) {
+            server->metrics().bytes_sent += result.bytes;
+            server->metrics().messages_sent++;
+        }
     }
 }
 

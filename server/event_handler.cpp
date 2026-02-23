@@ -50,6 +50,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
 
     if (auto ret = json_utils::extract_str(request, "username"); !ret)
     {
+        if (self->server) self->server->metrics().authentications_failed++;
         std::ignore = self->send_error(ret.error()); //Returns anyway, uses std::ignore to bypass [[nodiscard]]
         return;
     }
@@ -60,6 +61,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
 
     if (auto ret = json_utils::extract_str(request, "password"); !ret)
     {
+        if (self->server) self->server->metrics().authentications_failed++;
         std::ignore = self->send_error(ret.error());
         return;
     }
@@ -72,6 +74,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
     self->setstate(ConnState::Authenticated);
     self->reset_failures();
     self->send_encrypted(status_msg("Success", "Authentication successful"));
+    if (self->server) self->server->metrics().authentications_successful++;
     LOG_INFO("Client {} authenticated", self->get_id());
 }
 

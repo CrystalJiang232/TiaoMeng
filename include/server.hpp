@@ -71,6 +71,46 @@ private:
     std::unordered_map<std::string, std::shared_ptr<Connection>> conns;
 };
 
+// Server-wide metrics tracking
+struct ServerMetrics
+{
+    std::atomic<uint64_t> connections_accepted{0};
+    std::atomic<uint64_t> connections_closed{0};
+    std::atomic<uint64_t> handshakes_completed{0};
+    std::atomic<uint64_t> handshakes_failed{0};
+    std::atomic<uint64_t> authentications_successful{0};
+    std::atomic<uint64_t> authentications_failed{0};
+    std::atomic<uint64_t> messages_received{0};
+    std::atomic<uint64_t> messages_sent{0};
+    std::atomic<uint64_t> bytes_received{0};
+    std::atomic<uint64_t> bytes_sent{0};
+    std::atomic<uint64_t> errors{0};
+    std::atomic<uint64_t> timeouts{0};
+    
+    std::chrono::steady_clock::time_point start_time;
+    
+    ServerMetrics() { reset(); }
+    
+    void reset() 
+    { 
+        start_time = std::chrono::steady_clock::now();
+        connections_accepted = 0;
+        connections_closed = 0;
+        handshakes_completed = 0;
+        handshakes_failed = 0;
+        authentications_successful = 0;
+        authentications_failed = 0;
+        messages_received = 0;
+        messages_sent = 0;
+        bytes_received = 0;
+        bytes_sent = 0;
+        errors = 0;
+        timeouts = 0;
+    }
+    
+    void print() const;
+};
+
 class Server
 {
 public:
@@ -78,15 +118,27 @@ public:
     void start();
     void remove_connection(std::string_view id);
     void broadcast(const Msg& msg, std::string_view exclude_id = "");
+    
+    // Metrics access
+    ServerMetrics& metrics() { return metrics_; }
+    const ServerMetrics& metrics() const { return metrics_; }
+    void print_metrics() const { metrics_.print(); }
+    
+    // Connection counting
+    size_t connection_count() const { return connections.size(); }
 
 private:
     net::awaitable<void> do_accept();
+    void setup_signal_handlers();
+    void on_signal(int signal);
     
     net::io_context& io_ctx;
     tcp::acceptor acceptor;
     net::signal_set signals;
+    net::signal_set metrics_signals;  // For SIGUSR1
     ConnectionsMap connections;
     const Config& config_;
+    ServerMetrics metrics_;
 };
 
 class Connection : public std::enable_shared_from_this<Connection>

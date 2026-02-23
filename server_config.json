@@ -7,19 +7,19 @@
   },
   "security": {
     "max_failures_before_disconnect": 5,
-    "session_timeout_sec": 20,
+    "session_timeout_sec": 3600,
     "key_rotation_interval_sec": 86400,
     "require_client_auth": false
   },
   "timeouts": {
     "handshake_timeout_sec": 30,
-    "read_timeout_sec": 5,
+    "read_timeout_sec": 30,
     "write_timeout_sec": 30
   },
   "logging": {
-    "level": "debug",
+    "level": "error",
     "file": "",
     "max_size_mb": 100,
-    "enable_console": true
+    "enable_console": false
   }
 }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <ranges>
 
 Logger::State& Logger::instance()
 {
@@ -11,13 +12,11 @@ Logger::State& Logger::instance()
 
 Logger::Level Logger::parse_level(std::string_view lvl)
 {
-    std::string lower;
-    lower.reserve(lvl.size());
-    std::ranges::transform(lvl, std::back_inserter(lower),
-                           [](unsigned char c){ return std::tolower(c); });
-    if (lower == "debug") return Level::Debug;
-    if (lower == "warn" || lower == "warning") return Level::Warn;
-    if (lower == "error") return Level::Error;
+    std::string lstr = lvl | std::views::transform([](auto c) -> char{return std::tolower(c);}) | std::ranges::to<std::string>();
+
+    if (lstr == "debug") return Level::Debug;
+    if (lstr == "warn" || lstr == "warning") return Level::Warn;
+    if (lstr == "error") return Level::Error;
     return Level::Info;
 }
 
