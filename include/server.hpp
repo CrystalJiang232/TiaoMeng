@@ -140,13 +140,27 @@ public:
     void reset_failures() { fail_tracker.reset(); }
 
     void send_raw_error(std::string_view err, CloseMode mode = CloseMode::CancelOthers);
-    [[nodiscard]] bool send_error(std::string_view err, CloseMode mode = CloseMode::CancelOthers);
+    [[nodiscard]] bool send_error(std::string_view err, CloseMode mode = CloseMode::CancelOthers, bool force_close = false);
+    void reset_session_timer();
     
 private:
+    struct IoResult
+    {
+        boost::system::error_code ec;
+        size_t bytes = 0;
+        bool timed_out = false;
+    };
+    
     net::awaitable<void> read_header();
     net::awaitable<void> read_body(uint32_t len);
     net::awaitable<void> write();
     net::awaitable<void> close_async(std::string_view = "", CloseMode = CloseMode::BestEffort);
+    
+    net::awaitable<IoResult> read_with_timeout(net::mutable_buffer buf, std::chrono::seconds timeout);
+    net::awaitable<IoResult> write_with_timeout(const Msg& msg, std::chrono::seconds timeout);
+    void on_global_timeout();
+    void reset_global_timer(std::chrono::seconds duration);
+    void cancel_global_timer();
     
     void cancel_all_io();
     void clear_write_queue();
@@ -179,6 +193,7 @@ private:
     FailureTracker fail_tracker;
     std::atomic<bool> dead_pipe{false};
     const Config& config_;
+    net::steady_timer global_timer;
 
     friend class EventHandler;
 };

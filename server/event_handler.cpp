@@ -40,6 +40,7 @@ void EventHandler::route(std::shared_ptr<Connection> conn, const json::object& r
         return;
     }
     
+    conn->reset_session_timer();
     handler_it->second(conn, request);
 }
 

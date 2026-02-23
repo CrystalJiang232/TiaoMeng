@@ -6,6 +6,7 @@
 #include "fundamentals/msg_serialize.hpp"
 #include <bit>
 #include <mutex>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 
 namespace json = boost::json;
 using namespace bytes;
@@ -24,12 +25,17 @@ Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const
     , fail_tracker(config.security().max_failures_before_disconnect)
     , config_(config)
     , write_mtx()
+    , global_timer(strand)
 {
     LOG_INFO("Connection established with id = {}", id);
+    LOG_DEBUG("Connection {}: about to set global timer", id);
+    reset_global_timer(config_.timeouts().handshake_timeout);
+    LOG_DEBUG("Connection {}: global timer set complete", id);
 }
 
 Connection::~Connection() noexcept
 {
+    cancel_global_timer();
     if (ss_local)
     {
         secure_clear(*ss_local);
@@ -52,7 +58,7 @@ Connection::~Connection() noexcept
 
 void Connection::start()
 {
-    LOG_DEBUG("Connection {} starting read loop", id);
+    LOG_DEBUG("Connection {} start() called", id);
     net::co_spawn(strand,
         [self = shared_from_this()]() -> net::awaitable<void>
         {
@@ -60,6 +66,108 @@ void Connection::start()
             co_await self->read_header();
         },
         net::detached);
+    LOG_DEBUG("Connection {} start() co_spawn returned", id);
+}
+
+void Connection::reset_global_timer(std::chrono::seconds duration)
+{
+    LOG_DEBUG("Connection {}: reset_global_timer {}s", id, duration.count());
+    global_timer.expires_after(duration);
+    LOG_DEBUG("Connection {}: timer expiry set", id);
+    /*
+    global_timer.async_wait(
+        net::bind_executor(strand, [self = shared_from_this()](boost::system::error_code ec)
+        {
+            if (!ec)
+            {
+                self->on_global_timeout();
+            }
+        }));
+        */
+    
+    LOG_DEBUG("Connection {}: async_wait initiated", id);
+}
+
+void Connection::cancel_global_timer()
+{
+    boost::system::error_code ec;
+    global_timer.cancel(ec);
+}
+
+void Connection::on_global_timeout()
+{
+    auto st = state.load(std::memory_order_acquire);
+    if (st == ConnState::Connected || st == ConnState::Handshaking)
+    {
+        send_raw_error("Handshake timeout", CloseMode::CancelOthers);
+    }
+    else if (st == ConnState::Established || st == ConnState::Authenticated)
+    {
+        std::ignore = send_error("Session timeout", CloseMode::CancelOthers, true);
+    }
+}
+
+void Connection::reset_session_timer()
+{
+    auto st = state.load(std::memory_order_acquire);
+    if (st == ConnState::Established || st == ConnState::Authenticated)
+    {
+        reset_global_timer(config_.security().session_timeout);
+    }
+}
+
+net::awaitable<Connection::IoResult> Connection::read_with_timeout(
+    net::mutable_buffer buf,
+    std::chrono::seconds timeout)
+{
+    using net::experimental::awaitable_operators::operator||;
+    
+    net::steady_timer timer(strand);
+    timer.expires_after(timeout);
+    
+    auto read_op = [&]() -> net::awaitable<IoResult>
+    {
+        auto [ec, n] = co_await net::async_read(socket, buf, net::as_tuple(net::use_awaitable));
+        timer.cancel();
+        co_return IoResult{ec, n, false};
+    };
+    
+    auto timer_op = [&]() -> net::awaitable<IoResult>
+    {
+        auto [ec] = co_await timer.async_wait(net::as_tuple(net::use_awaitable));
+        co_return IoResult{ec, 0, true};
+    };
+    
+    auto result = co_await (read_op() || timer_op());
+    co_return result.index() == 0 ? std::get<0>(result) : std::get<1>(result);
+}
+
+net::awaitable<Connection::IoResult> Connection::write_with_timeout(
+    const Msg& msg,
+    std::chrono::seconds timeout)
+{
+    using net::experimental::awaitable_operators::operator||;
+    
+    net::steady_timer timer(strand);
+    timer.expires_after(timeout);
+    
+    auto buf = msg::serialize(msg);
+    
+    auto write_op = [&]() -> net::awaitable<IoResult>
+    {
+        auto [ec, n] = co_await net::async_write(socket, net::buffer(buf), net::as_tuple(net::use_awaitable));
+        timer.cancel();
+        co_return IoResult{ec, n, false};
+    };
+    
+    auto timer_op = [&]() -> net::awaitable<IoResult>
+    {
+        auto [ec] = co_await timer.async_wait(net::as_tuple(net::use_awaitable));
+        co_return IoResult{ec, 0, true};
+    };
+    
+    auto result = co_await (write_op() || timer_op());
+    co_return std::get<0>(result);
 }
 
 net::awaitable<void> Connection::read_header()
@@ -67,18 +175,37 @@ net::awaitable<void> Connection::read_header()
     LOG_DEBUG("Connection {} read_header waiting for 4 bytes", id);
     read_buf.resize(4);
 
-    auto [ec, n] = co_await net::async_read(
-        socket,
+    auto result = co_await read_with_timeout(
         net::buffer(read_buf, 4),
-        net::as_tuple(net::use_awaitable));
+        config_.timeouts().read_timeout);
     
-    LOG_DEBUG("Connection {} read_header got {} bytes, ec={}", id, n, ec.message());
+    LOG_DEBUG("Connection {} read_header result: timed_out={}, ec={}, bytes={}",
+              id, result.timed_out, result.ec.message(), result.bytes);
     
-    if (ec)
+    if (result.timed_out)
     {
-        if (ec == net::error::eof || 
-            ec == net::error::connection_reset ||
-            ec == net::error::broken_pipe)
+        if (is_pipe_dead())
+        {
+            co_return;
+        }
+
+        if(has_session_key())
+        {
+            //Encrypted error
+            std::ignore = send_error("Read header timeout", CloseMode::CancelOthers, true);
+        }
+        else
+        {
+            send_raw_error("Read header timeout", CloseMode::CancelOthers);
+        }
+        co_return;
+    }
+    
+    if (result.ec)
+    {
+        if (result.ec == net::error::eof ||
+            result.ec == net::error::connection_reset ||
+            result.ec == net::error::broken_pipe)
         {
             mark_pipe_dead();
         }
@@ -88,7 +215,7 @@ net::awaitable<void> Connection::read_header()
     
     uint32_t len = to_int(read_buf);
 
-    if (n != 4 || len < 5 || len > Msg::max_len)
+    if (result.bytes != 4 || len < 5 || len > Msg::max_len)
     {
         send_raw_error("Length verification error", CloseMode::CancelOthers);
         co_return;
@@ -100,20 +227,31 @@ net::awaitable<void> Connection::read_header()
 net::awaitable<void> Connection::read_body(uint32_t len)
 {
     LOG_DEBUG("Connection {} read_body waiting for {} bytes (total len={})", id, len - 4, len);
-    read_buf.resize(len);   
+    read_buf.resize(len);
 
-    auto [ec, n] = co_await net::async_read(
-        socket,
+    auto result = co_await read_with_timeout(
         net::buffer(read_buf.data() + 4, len - 4),
-        net::as_tuple(net::use_awaitable));
+        config_.timeouts().read_timeout);
     
-    LOG_DEBUG("Connection {} read_body got {} bytes, ec={}", id, n, ec.message());
+    LOG_DEBUG("Connection {} read_body result: timed_out={}, ec={}, bytes={}",
+              id, result.timed_out, result.ec.message(), result.bytes);
     
-    if (ec)
+    if (result.timed_out)
     {
-        if (ec == net::error::eof || 
-            ec == net::error::connection_reset ||
-            ec == net::error::broken_pipe)
+        record_failure();
+        if (is_pipe_dead())
+        {
+            co_return;
+        }
+        send_raw_error("Read body timeout", CloseMode::CancelOthers);
+        co_return;
+    }
+    
+    if (result.ec)
+    {
+        if (result.ec == net::error::eof ||
+            result.ec == net::error::connection_reset ||
+            result.ec == net::error::broken_pipe)
         {
             mark_pipe_dead();
         }
@@ -121,7 +259,7 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         co_return;
     }
     
-    if (n != len - 4)
+    if (result.bytes != len - 4)
     {
         send_raw_error("Incomplete read", CloseMode::CancelOthers);
         co_return;
@@ -327,7 +465,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         client_pk.reset();
         
         state.store(ConnState::Established, std::memory_order_release);
-    LOG_INFO("Secure session established with {}", id);
+        reset_global_timer(config_.security().session_timeout);
+        LOG_INFO("Secure session established with {}", id);
         break;
     }
 
@@ -347,13 +486,13 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 {
     if (state.load(std::memory_order_acquire) != ConnState::Established && state.load(std::memory_order_acquire) != ConnState::Authenticated)
     {
-        std::ignore = send_error("Invalid state: encrypted connection not yet established", CloseMode::CancelOthers);
+        send_raw_error("Invalid state: encrypted connection not yet established", CloseMode::CancelOthers);
         co_return;
     }
 
     if (!sess.is_established())
     {
-        std::ignore = send_error("Session key not established", CloseMode::CancelOthers);
+        send_raw_error("Session key not established", CloseMode::CancelOthers);
         co_return;
     }
 
@@ -521,21 +660,28 @@ net::awaitable<void> Connection::write()
             LOG_DEBUG("Connection {} write() releasing write_mtx", id);
         }
         
-        auto buf = msg::serialize(msg);
-        LOG_DEBUG("Connection {} write serializing {} bytes, calling async_write", id, buf.size());
-        auto [ec, n] = co_await net::async_write(
-            socket,
-            net::buffer(buf),
-            net::as_tuple(net::use_awaitable));
+        auto result = co_await write_with_timeout(msg, config_.timeouts().write_timeout);
+        LOG_DEBUG("Connection {} write result: timed_out={}, ec={}, bytes={}",
+                  id, result.timed_out, result.ec.message(), result.bytes);
         
-        LOG_DEBUG("Connection {} async_write completed: n={}, ec={}", id, n, ec.message());
-        
-        if (ec)
+        if (result.timed_out)
         {
-            LOG_DEBUG("Connection {} write error: {}", id, ec.message());
-            if (ec == net::error::eof ||
-                ec == net::error::connection_reset ||
-                ec == net::error::broken_pipe)
+            record_failure();
+            {
+                std::lock_guard lock(write_mtx);
+                write_in_progress.store(false);
+                clear_write_queue();
+            }
+            send_raw_error("Write timeout", CloseMode::CancelOthers);
+            co_return;
+        }
+        
+        if (result.ec)
+        {
+            LOG_DEBUG("Connection {} write error: {}", id, result.ec.message());
+            if (result.ec == net::error::eof ||
+                result.ec == net::error::connection_reset ||
+                result.ec == net::error::broken_pipe)
             {
                 mark_pipe_dead();
             }
@@ -546,7 +692,7 @@ net::awaitable<void> Connection::write()
             send_raw_error("Pipe writing error", CloseMode::CancelOthers);
             co_return;
         }
-        LOG_DEBUG("Connection {} write successful, {} bytes sent", id, n);
+        LOG_DEBUG("Connection {} write successful, {} bytes sent", id, result.bytes);
     }
 }
 
@@ -622,6 +768,7 @@ void Connection::close(std::string_view err, Connection::CloseMode mode)
         }, net::detached);
 }
 
+//Defaults to force close
 void Connection::send_raw_error(std::string_view err, CloseMode mode)
 {
     LOG_DEBUG("Connection {} send_raw_error: {}", id, err);
@@ -631,11 +778,11 @@ void Connection::send_raw_error(std::string_view err, CloseMode mode)
     close("", mode); // close_async will ignore the empty string
 }
 
-[[nodiscard("Do not discard send_error's value: caller is responsible for co_return upon this function returning true to prevent connection leakage.")]] bool Connection::send_error(std::string_view err, CloseMode mode)
+[[nodiscard("Do not discard send_error's value: caller is responsible for co_return upon this function returning true to prevent connection leakage.")]] bool Connection::send_error(std::string_view err, CloseMode mode, bool force_close)
 {
     LOG_DEBUG("Connection {} send_error: {}", id, err);
     send_encrypted(status_msg("Error", err), encrypted_error);
-    if (record_failure())
+    if (force_close || record_failure())
     {
         close("", mode);
         return true;

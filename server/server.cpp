@@ -58,7 +58,7 @@ void Server::start()
 
 net::awaitable<void> Server::do_accept()
 {
-
+    LOG_DEBUG("do_accept: starting loop");
     while (true)
     {
         auto [ec, sock] = co_await acceptor.async_accept(net::as_tuple(net::use_awaitable));
@@ -69,10 +69,13 @@ net::awaitable<void> Server::do_accept()
             continue;
         }
         std::string id = std::format("{}",sock);
+        LOG_DEBUG("do_accept: accepted {}, creating connection", id);
         auto conn = std::make_shared<Connection>(std::move(sock), this, id, config_, io_ctx);
+        LOG_DEBUG("do_accept: connection created, inserting");
         connections.insert(id, conn);
-        
+        LOG_DEBUG("do_accept: about to call start()");
         conn->start();
+        LOG_DEBUG("do_accept: start() returned");
     }
 }
 
