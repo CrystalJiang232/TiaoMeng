@@ -22,7 +22,7 @@ A high-performance TCP messaging server implementing post-quantum cryptography (
 ### Build
 
 ```bash
-# Optimized production build
+# Optimized production build, best performance  
 cmake -DMSG_SVR_BUILD_MODE=OPTIMIZE -B build
 cmake --build build -j$(nproc)
 
@@ -40,6 +40,8 @@ cmake --build build -j$(nproc)
 
 ### Run
 
+Program accepts one CLI argument indicating listening port, defaults to 8080:  
+
 ```bash
 # Default port (8080)
 ./build/bin/server
@@ -48,7 +50,12 @@ cmake --build build -j$(nproc)
 ./build/bin/server 9090
 ```
 
-Server loads `server_config.json` from working directory if present.
+On initialization, server loads `server_config.json` from working directory if present.
+
+> Upon fatal read error or incorrect file format, default settings for ALL configurations will be loaded. Otherwise default value is used for single invalid/out-of-range configuration option.  
+
+> CLI port settings override one specified in `server_config.json`.  
+
 
 ## Configuration
 
@@ -144,7 +151,7 @@ Handshake flow uses Kyber768 KEM:
 ## Key Features
 
 | Feature | Implementation |
-|---------|---------------|
+|:---------:|:---------------:|
 | Post-Quantum Crypto | Kyber768 KEM + AES-GCM-256 |
 | Async I/O | C++20 coroutines + Boost.Asio |
 | Thread Safety | Strand-per-connection pattern |
@@ -156,7 +163,7 @@ Handshake flow uses Kyber768 KEM:
 ## Build Modes
 
 | Mode | CMake Flag | Purpose | Key Flags |
-|------|-----------|---------|-----------|
+|:------:|:-----------:|:---------:|:-----------:|
 | DEFAULT | (none) | Development | -O2 -g |
 | DEBUG | `-DMSG_SVR_BUILD_MODE=DEBUG` | Debugging | -O0 -fsanitize=address,undefined |
 | OPTIMIZE | `-DMSG_SVR_BUILD_MODE=OPTIMIZE` | Production | -O3 -march=native -flto |
@@ -223,9 +230,9 @@ A test client implementation is provided for integration testing with full Kyber
 ## Signals
 
 | Signal | Action |
-|--------|--------|
-| SIGINT / SIGTERM | Graceful shutdown + print final metrics |
-| SIGUSR1 | Print current server metrics to stdout and log |
+|:--------:|:--------:|
+| SIGINT / SIGTERM | Graceful shutdown + print final metrics |  
+| SIGUSR1 | Print current server metrics to stdout and log |  
 
 ## Performance
 
@@ -233,9 +240,9 @@ Load tested: 300+ concurrent connections, 100% handshake/auth success, ~10 req/s
 
 ## Tech Stack
 
-- **C++23**: Coroutines, concepts, ranges, std::expected
+- **C++23**: Coroutines, concepts, ranges, `std::expected`
 - **Boost.Asio 1.82+**: Networking, strands, timers
-- **liboqs**: NIST post-quantum cryptography (Kyber768)
+- **liboqs**: NIST post-quantum cryptography (Kyber768) based bidirectional key exchange  
 - **OpenSSL 3.0**: AES-GCM-256 encryption
 - **spdlog**: Structured logging
 - **CMake 3.25+**: Build system with mode selection

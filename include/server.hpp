@@ -62,9 +62,9 @@ class ConnectionsMap
 public:
     void insert(std::string id, std::shared_ptr<Connection> conn);
     void erase(std::string_view id);
-    std::shared_ptr<Connection> find(std::string_view id) const;
-    std::vector<std::shared_ptr<Connection>> snapshot() const;
-    size_t size() const;
+    [[nodiscard]] std::shared_ptr<Connection> find(std::string_view id) const;
+    [[nodiscard]] std::vector<std::shared_ptr<Connection>> snapshot() const;
+    [[nodiscard]] size_t size() const;
 
 private:
     mutable std::shared_mutex mtx;
@@ -120,12 +120,11 @@ public:
     void broadcast(const Msg& msg, std::string_view exclude_id = "");
     
     // Metrics access
-    ServerMetrics& metrics() { return metrics_; }
-    const ServerMetrics& metrics() const { return metrics_; }
-    void print_metrics() const { metrics_.print(); }
+    ServerMetrics& metrics() { return mts; }
+    const ServerMetrics& metrics() const { return mts; }
+    void print_metrics() const { mts.print(); }
     
-    // Connection counting
-    size_t connection_count() const { return connections.size(); }
+    [[nodiscard]] size_t connection_count() const { return connections.size(); }
 
 private:
     net::awaitable<void> do_accept();
@@ -138,7 +137,7 @@ private:
     net::signal_set metrics_signals;  // For SIGUSR1
     ConnectionsMap connections;
     const Config& config_;
-    ServerMetrics metrics_;
+    ServerMetrics mts;
 };
 
 class Connection : public std::enable_shared_from_this<Connection>
@@ -154,18 +153,18 @@ public:
     
     struct FailureTracker
     {
-        size_t max_failures = 5;
+        const size_t max_failures = 5;
         std::atomic<size_t> count{0};
         
         explicit FailureTracker(size_t max_fail = 5) : max_failures(max_fail) {}
         
-        bool record()
+        [[nodiscard("record() returns whether count has exceeded max failure after pre self-increment.")]] bool record()
         {
             return ++count >= max_failures;
         }
         
         void reset() { count.store(0, std::memory_order_relaxed); }
-        bool threshold_exceeded() const { return count.load(std::memory_order_relaxed) >= max_failures; }
+        [[nodiscard]] bool threshold_exceeded() const { return count.load(std::memory_order_relaxed) >= max_failures; }
     };
 
     Connection(tcp::socket, Server*, std::string, const Config& config, net::io_context& io);
@@ -174,14 +173,14 @@ public:
     void send(const Msg& msg);
     void send_encrypted(const boost::json::object& json_obj, MsgType type = encrypted_response);
     void send_encrypted(const Msg& msg);
-    std::string_view get_id() const { return id; }
-    ConnState getstate() const { return state.load(std::memory_order_acquire); }
+    [[nodiscard]] std::string_view get_id() const { return id; }
+    [[nodiscard]] ConnState getstate() const { return state.load(std::memory_order_acquire); }
     void setstate(ConnState newstate) { state.store(newstate, std::memory_order_release); }
 
-    void close(std::string_view err = "", CloseMode mode = CloseMode::CancelOthers);
+    void close(CloseMode mode = CloseMode::CancelOthers);
     
     void mark_pipe_dead() { dead_pipe.store(true); }
-    bool is_pipe_dead() const { return dead_pipe.load() || !socket.is_open(); }
+    [[nodiscard]] bool is_pipe_dead() const { return dead_pipe.load() || !socket.is_open(); }
     void shutdown() noexcept;
     
     [[nodiscard]] bool has_session_key() const { return sess.is_established(); }
@@ -192,7 +191,8 @@ public:
     void reset_failures() { fail_tracker.reset(); }
 
     void send_raw_error(std::string_view err, CloseMode mode = CloseMode::CancelOthers);
-    [[nodiscard]] bool send_error(std::string_view err, CloseMode mode = CloseMode::CancelOthers, bool force_close = false);
+    [[nodiscard("Do not discard send_error's value: caller is responsible for co_return upon this function returning true to prevent connection leakage. Use std::ignore or void cast for explicit schematics.")]]
+    bool send_error(std::string_view err, CloseMode mode = CloseMode::CancelOthers, bool force_close = false);
     void reset_session_timer();
     
 private:
@@ -206,7 +206,7 @@ private:
     net::awaitable<void> read_header();
     net::awaitable<void> read_body(uint32_t len);
     net::awaitable<void> write();
-    net::awaitable<void> close_async(std::string_view = "", CloseMode = CloseMode::BestEffort);
+    net::awaitable<void> close_async(CloseMode mode = CloseMode::BestEffort);
     
     net::awaitable<IoResult> read_with_timeout(net::mutable_buffer buf, std::chrono::seconds timeout);
     net::awaitable<IoResult> write_with_timeout(const Msg& msg, std::chrono::seconds timeout);

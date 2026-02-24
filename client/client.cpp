@@ -490,6 +490,11 @@ std::expected<json::object, std::string> Client::recv_response(int timeout_sec)
         {
             return std::unexpected(std::format("Invalid message length: {}", msg_len));
         }
+
+        if (!is_encrypted(msg_type))
+        {
+            return std::unexpected(std::format("Message type schematic error: unexpected non-encrypted message received"));
+        }
         
         // Read body synchronously
         size_t body_len = msg_len - 5;
@@ -512,11 +517,12 @@ std::expected<json::object, std::string> Client::recv_response(int timeout_sec)
             }
         }
         
-        // Combine header and body for parsing
         std::vector<std::byte> full_msg;
         full_msg.reserve(msg_len);
-        full_msg.insert(full_msg.end(), header.begin(), header.end());
-        full_msg.insert(full_msg.end(), body.begin(), body.end());
+
+        auto it = std::back_insert_iterator(full_msg);
+        std::ranges::copy(header, it);
+        std::ranges::copy(body, it); //When will views::concat be online awa
         
         auto msg_result = msg::parse(full_msg);
         if (!msg_result)

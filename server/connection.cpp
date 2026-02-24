@@ -15,6 +15,8 @@ using crypto::secure_clear;
 using crypto::Kyber768;
 using json_utils::status_msg;
 
+// C++ 'fundamentals' - initialization sequence is as per variable DECLARED sequence, not as per initializer sequence in ctor definition  
+// It's vital to align latter to former to prevent unexpected schematic-based error(or '-Wreorder')
 Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const Config& config, net::io_context& io)
     : strand(net::make_strand(io))
     , socket(std::move(sock))
@@ -24,7 +26,6 @@ Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const
     , write_in_progress(false)
     , fail_tracker(config.security().max_failures_before_disconnect)
     , config_(config)
-    , write_mtx()
     , global_timer(strand)
 {
     LOG_INFO("Connection established with id = {}", id);
@@ -475,7 +476,10 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         state.store(ConnState::Established, std::memory_order_release);
         reset_global_timer(config_.security().session_timeout);
         LOG_INFO("Secure session established with {}", id);
-        if (server) server->metrics().handshakes_completed++;
+        if (server) 
+        {
+            server->metrics().handshakes_completed++;
+        }
         break;
     }
 
@@ -740,9 +744,8 @@ void Connection::shutdown() noexcept
     }
 }
 
-net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mode)
+net::awaitable<void> Connection::close_async(CloseMode mode)
 {
-    (void)err; // Error message is now sent by caller (send_error/send_raw_error) before calling close
     
     if (is_pipe_dead())
     {
@@ -773,14 +776,14 @@ net::awaitable<void> Connection::close_async(std::string_view err, CloseMode mod
     co_return;
 }
 
-void Connection::close(std::string_view err, Connection::CloseMode mode)
+void Connection::close(CloseMode mode)
 {
-    LOG_DEBUG("Connection {} close() called, err='{}', mode={}", id, err, std::to_underlying(mode));
+    LOG_DEBUG("Connection {} close() called, mode={}", id, std::to_underlying(mode));
     net::co_spawn(strand,
-        [self = shared_from_this(), err, mode]() -> net::awaitable<void>
+        [self = shared_from_this(), mode]() -> net::awaitable<void>
         {
             LOG_DEBUG("Connection {} close coroutine starting", self->id);
-            co_await self->close_async(err, mode);
+            co_await self->close_async(mode);
             LOG_DEBUG("Connection {} close coroutine completed", self->id);
         }, net::detached);
 }
@@ -792,16 +795,16 @@ void Connection::send_raw_error(std::string_view err, CloseMode mode)
     static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
     auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
     send(err_msg);
-    close("", mode); // close_async will ignore the empty string
+    close(mode);
 }
 
-[[nodiscard("Do not discard send_error's value: caller is responsible for co_return upon this function returning true to prevent connection leakage.")]] bool Connection::send_error(std::string_view err, CloseMode mode, bool force_close)
+bool Connection::send_error(std::string_view err, CloseMode mode, bool force_close)
 {
     LOG_DEBUG("Connection {} send_error: {}", id, err);
     send_encrypted(status_msg("Error", err), encrypted_error);
     if (force_close || record_failure())
     {
-        close("", mode);
+        close(mode);
         return true;
     }
     return false;

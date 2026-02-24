@@ -153,11 +153,11 @@ net::awaitable<void> Server::do_accept()
         if (ec)
         {
             LOG_ERROR("Accept error: {}", ec.message());
-            metrics_.errors++;
+            mts.errors++;
             continue;
         }
         
-        metrics_.connections_accepted++;
+        mts.connections_accepted++;
         std::string id = std::format("{}",sock);
         LOG_DEBUG("do_accept: accepted {}, creating connection", id);
         auto conn = std::make_shared<Connection>(std::move(sock), this, id, config_, io_ctx);
@@ -175,7 +175,7 @@ void Server::remove_connection(std::string_view id)
     if (conn) {
         conn->mark_pipe_dead();
         connections.erase(id);
-        metrics_.connections_closed++;
+        mts.connections_closed++;
     }
 }
 
