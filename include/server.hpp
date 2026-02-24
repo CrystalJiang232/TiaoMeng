@@ -27,6 +27,7 @@
 #include "crypto/kyber768.hpp"
 #include "crypto/session_key.hpp"
 #include "crypto/utils.hpp"
+#include "logger/metrics.hpp"
 #include "json_utils.hpp"
 #include "event_handler.hpp"
 
@@ -71,46 +72,6 @@ private:
     std::unordered_map<std::string, std::shared_ptr<Connection>> conns;
 };
 
-// Server-wide metrics tracking
-struct ServerMetrics
-{
-    std::atomic<uint64_t> connections_accepted{0};
-    std::atomic<uint64_t> connections_closed{0};
-    std::atomic<uint64_t> handshakes_completed{0};
-    std::atomic<uint64_t> handshakes_failed{0};
-    std::atomic<uint64_t> authentications_successful{0};
-    std::atomic<uint64_t> authentications_failed{0};
-    std::atomic<uint64_t> messages_received{0};
-    std::atomic<uint64_t> messages_sent{0};
-    std::atomic<uint64_t> bytes_received{0};
-    std::atomic<uint64_t> bytes_sent{0};
-    std::atomic<uint64_t> errors{0};
-    std::atomic<uint64_t> timeouts{0};
-    
-    std::chrono::steady_clock::time_point start_time;
-    
-    ServerMetrics() { reset(); }
-    
-    void reset() 
-    { 
-        start_time = std::chrono::steady_clock::now();
-        connections_accepted = 0;
-        connections_closed = 0;
-        handshakes_completed = 0;
-        handshakes_failed = 0;
-        authentications_successful = 0;
-        authentications_failed = 0;
-        messages_received = 0;
-        messages_sent = 0;
-        bytes_received = 0;
-        bytes_sent = 0;
-        errors = 0;
-        timeouts = 0;
-    }
-    
-    void print() const;
-};
-
 class Server
 {
 public:
@@ -136,7 +97,7 @@ private:
     net::signal_set signals;
     net::signal_set metrics_signals;  // For SIGUSR1
     ConnectionsMap connections;
-    const Config& config_;
+    const Config& cfg;
     ServerMetrics mts;
 };
 
@@ -244,7 +205,7 @@ private:
     std::atomic<bool> write_in_progress{false};
     FailureTracker fail_tracker;
     std::atomic<bool> dead_pipe{false};
-    const Config& config_;
+    const Config& cfg;
     net::steady_timer global_timer;
 
     friend class EventHandler;

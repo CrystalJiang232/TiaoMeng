@@ -1,6 +1,6 @@
 #include "server.hpp"
 #include "config.hpp"
-#include "logger.hpp"
+#include "logger/logger.hpp"
 #include "event_handler.hpp"
 #include "fundamentals/bytes.hpp"
 #include "fundamentals/msg_serialize.hpp"
@@ -25,12 +25,12 @@ Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const
     , state(ConnState::Connected)
     , write_in_progress(false)
     , fail_tracker(config.security().max_failures_before_disconnect)
-    , config_(config)
+    , cfg(config)
     , global_timer(strand)
 {
     LOG_INFO("Connection established with id = {}", id);
     LOG_DEBUG("Connection {}: about to set global timer", id);
-    reset_global_timer(config_.timeouts().handshake_timeout);
+    reset_global_timer(cfg.timeouts().handshake_timeout);
     LOG_DEBUG("Connection {}: global timer set complete", id);
 }
 
@@ -114,7 +114,7 @@ void Connection::reset_session_timer()
     auto st = state.load(std::memory_order_acquire);
     if (st == ConnState::Established || st == ConnState::Authenticated)
     {
-        reset_global_timer(config_.security().session_timeout);
+        reset_global_timer(cfg.security().session_timeout);
     }
 }
 
@@ -179,7 +179,7 @@ net::awaitable<void> Connection::read_header()
 
     auto result = co_await read_with_timeout(
         net::buffer(read_buf, 4),
-        config_.timeouts().read_timeout);
+        cfg.timeouts().read_timeout);
     
     LOG_DEBUG("Connection {} read_header result: timed_out={}, ec={}, bytes={}",
               id, result.timed_out, result.ec.message(), result.bytes);
@@ -233,7 +233,7 @@ net::awaitable<void> Connection::read_body(uint32_t len)
 
     auto result = co_await read_with_timeout(
         net::buffer(read_buf.data() + 4, len - 4),
-        config_.timeouts().read_timeout);
+        cfg.timeouts().read_timeout);
     
     LOG_DEBUG("Connection {} read_body result: timed_out={}, ec={}, bytes={}",
               id, result.timed_out, result.ec.message(), result.bytes);
@@ -474,7 +474,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         client_pk.reset();
         
         state.store(ConnState::Established, std::memory_order_release);
-        reset_global_timer(config_.security().session_timeout);
+        reset_global_timer(cfg.security().session_timeout);
         LOG_INFO("Secure session established with {}", id);
         if (server) 
         {
@@ -675,7 +675,7 @@ net::awaitable<void> Connection::write()
             LOG_DEBUG("Connection {} write() releasing write_mtx", id);
         }
         
-        auto result = co_await write_with_timeout(msg, config_.timeouts().write_timeout);
+        auto result = co_await write_with_timeout(msg, cfg.timeouts().write_timeout);
         LOG_DEBUG("Connection {} write result: timed_out={}, ec={}, bytes={}",
                   id, result.timed_out, result.ec.message(), result.bytes);
         

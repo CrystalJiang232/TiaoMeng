@@ -2,6 +2,7 @@
 #include "server.hpp"
 #include "json_utils.hpp"
 #include "logger.hpp"
+#include "fundamentals/msg_serialize.hpp"
 
 namespace json = boost::json;
 using namespace json_utils;
@@ -46,6 +47,12 @@ void EventHandler::route(std::shared_ptr<Connection> conn, const json::object& r
 
 void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::object& request)
 {
+    if(self->is_authenticated())
+    {
+        std::ignore = self->send_error("Already authenticated");
+        return;
+    }
+
     std::string username, password;
 
     if (auto ret = json_utils::extract_str(request, "username"); !ret)
