@@ -57,6 +57,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 add_subdirectory(fundamentals)
 add_subdirectory(crypto)
 add_subdirectory(logger)
+add_subdirectory(threadpool)
 add_subdirectory(server)
 add_subdirectory(client)
 

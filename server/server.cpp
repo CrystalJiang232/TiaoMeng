@@ -56,8 +56,8 @@ void Server::start()
     // Setup shutdown signals
     signals.async_wait([this](auto, auto sig)
     {
-        LOG_INFO("Received signal {}, shutting down...", sig);
-        print_metrics();  // Print final metrics on shutdown
+        LOG_WARN("Received signal {}, shutting down...", sig);
+        LOG_INFO("{}", mts);
         io_ctx.stop();
     });
     
@@ -66,13 +66,13 @@ void Server::start()
     {
         if (!ec && sig == SIGUSR1)
         {
-            print_metrics();
+            LOG_INFO("{}",mts);
             // Re-register for next signal
             metrics_signals.async_wait([this](boost::system::error_code ec2, int sig2)
             {
                 if (!ec2 && sig2 == SIGUSR1)
                 {
-                    print_metrics();
+                    LOG_INFO("{}",mts);
                 }
             });
         }
@@ -117,20 +117,16 @@ void Server::remove_connection(std::string_view id)
     }
 }
 
-void Server::broadcast(const Msg& msg, std::string_view exclude_id)
+void Server::broadcast(const Msg& m, std::string_view exclude_id)
 {
-    auto conns = connections.snapshot();
     
-    for (auto& conn : conns)
+    
+    for (auto& conn : connections.snapshot() | std::views::filter([this, exclude_id](auto&& x){
+        return x && 
+            !x->is_pipe_dead() && 
+            x->get_id() != exclude_id;
+        })) //Lifetime extension?  
     {
-        if (conn->get_id() == exclude_id)
-        {
-            continue;
-        }
-        
-        if (conn && !conn->is_pipe_dead())
-        {
-            conn->send_encrypted(msg);
-        }
+        conn->send_encrypted(m);
     }
 }

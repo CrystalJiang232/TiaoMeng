@@ -256,6 +256,8 @@ Load tested: 300+ concurrent connections, 100% handshake/auth success, ~10 req/s
 - [ ] **Docker Containerization**: Multi-stage Dockerfile for deployment
 - [ ] **Configuration Hot-Reload**: Runtime configuration updates without restart
 - [ ] **Rate Limiting**: Per-IP and per-connection request throttling
+- [ ] **Authentication system**  
+- [ ] 
 
 ## Author
 

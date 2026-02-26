@@ -76,13 +76,24 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
     {
         password = *ret;
     }
+
+    std::ignore = username, password; //Placeholder
     
+    if(true)
+    {
+        self->setstate(ConnState::Authenticated);
+        self->reset_failures();
+        self->send_encrypted(status_msg("Success", "Authentication successful"));
+        if (self->server) self->server->metrics().authentications_successful++;
+        LOG_INFO("Client {} authenticated", self->get_id());
+    }
+    else
+    {
+        std::ignore = self->send_error("Authentication Failed");
+        LOG_INFO("Client {} authentication failed", self->get_id());
+        return;
+    }
     
-    self->setstate(ConnState::Authenticated);
-    self->reset_failures();
-    self->send_encrypted(status_msg("Success", "Authentication successful"));
-    if (self->server) self->server->metrics().authentications_successful++;
-    LOG_INFO("Client {} authenticated", self->get_id());
 }
 
 void EventHandler::handle_command(std::shared_ptr<Connection> self, const json::object& request)
@@ -108,7 +119,18 @@ void EventHandler::handle_broadcast(std::shared_ptr<Connection> self, const json
     LOG_INFO("Broadcast request from {}: {}", self->get_id(), json::serialize(request));
     self->send_encrypted(status_msg("Success", "Broadcast request processed"));
 
-    (void)self->server; //Placeholder for friend class declaration
+    auto json_payload = json::serialize(json::object{{"From",self->get_id()}, {"msg", json_utils::extract_str(request,"msg").value_or("")}})
+            | std::views::transform([](auto&& ch){return static_cast<std::byte>(ch);})
+            | std::ranges::to<Msg::payload_t>();
+
+    auto m = msg::make(json_payload, encrypted_notify);
+    if(!m)
+    {
+        LOG_ERROR("Unexpected broadcast message make error");
+        return;
+    }
+
+    self->server->broadcast(*m, self->get_id());
 }
 
 void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::object& request)

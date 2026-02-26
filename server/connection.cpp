@@ -710,7 +710,8 @@ net::awaitable<void> Connection::write()
         LOG_DEBUG("Connection {} write successful, {} bytes sent", id, result.bytes);
         
         // Track bytes and messages sent
-        if (server) {
+        if (server) 
+        {
             server->metrics().bytes_sent += result.bytes;
             server->metrics().messages_sent++;
         }

@@ -62,8 +62,7 @@ std::expected<Msg, Msg::errc> make(std::span<const std::byte> data, MsgType type
         }
     };
 
-    Msg msg = MsgConstructor(data.size() + 5, type, data);
-    return msg;
+    return MsgConstructor(data.size() + 5, type, data);
 }
 
 Msg::payload_t serialize(const Msg& msg)

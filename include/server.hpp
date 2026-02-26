@@ -83,8 +83,7 @@ public:
     // Metrics access
     ServerMetrics& metrics() { return mts; }
     const ServerMetrics& metrics() const { return mts; }
-    void print_metrics() const { mts.print(); }
-    
+
     [[nodiscard]] size_t connection_count() const { return connections.size(); }
 
 private:
