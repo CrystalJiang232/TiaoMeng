@@ -1,6 +1,6 @@
 #include "server.hpp"
 #include "config.hpp"
-#include "logger.hpp"
+#include "logger/logger.hpp"
 
 #include <print>
 #include <cstring>

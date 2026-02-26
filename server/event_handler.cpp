@@ -1,7 +1,7 @@
 #include "event_handler.hpp"
 #include "server.hpp"
-#include "json_utils.hpp"
-#include "logger.hpp"
+#include "fundamentals/json_utils.hpp"
+#include "logger/logger.hpp"
 #include "fundamentals/msg_serialize.hpp"
 
 namespace json = boost::json;

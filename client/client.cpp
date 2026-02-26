@@ -1,9 +1,9 @@
-#include "client.hpp"
+#include "client/client.hpp"
 #include "fundamentals/types.hpp"
 #include "fundamentals/bytes.hpp"
 #include "fundamentals/msg_serialize.hpp"
 #include "crypto/utils.hpp"
-#include "json_utils.hpp"
+#include "fundamentals/json_utils.hpp"
 #include <boost/asio.hpp>
 #include <boost/json.hpp>
 #include <algorithm>

@@ -1,5 +1,5 @@
-#include "client.hpp"
-#include "json_utils.hpp"
+#include "client/client.hpp"
+#include "fundamentals/json_utils.hpp"
 #include <print>
 #include <charconv>
 #include <cstring>
