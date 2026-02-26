@@ -19,6 +19,7 @@ target_link_libraries(server
     crypto
     fundamentals
     logger
+    threadpool
 )
 
 set_target_properties(server PROPERTIES

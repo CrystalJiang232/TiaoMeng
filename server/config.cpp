@@ -132,6 +132,14 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
         {
             return std::unexpected(max_msg.error());
         }
+        if (auto cpu_t = get_uint<size_t>(srv, "cpu_threads", 0, 256, 0); cpu_t)
+        {
+            config.srv.cpu_threads = *cpu_t;
+        }
+        else
+        {
+            return std::unexpected(cpu_t.error());
+        }
     }
     if (auto it = root.find("security"); it != root.end() && it->value().is_object())
     {

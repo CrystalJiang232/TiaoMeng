@@ -30,6 +30,7 @@
 #include "logger/metrics.hpp"
 #include "json_utils.hpp"
 #include "event_handler.hpp"
+#include "threadpool/threadpool.hpp"
 
 // Forward declaration
 class Config;
@@ -76,13 +77,16 @@ class Server
 {
 public:
     Server(net::io_context& io, const Config& config);
+    ~Server();
     void start();
     void remove_connection(std::string_view id);
     void broadcast(const Msg& msg, std::string_view exclude_id = "");
     
-    // Metrics access
-    ServerMetrics& metrics() { return mts; }
-    const ServerMetrics& metrics() const { return mts; }
+    [[nodiscard]] ThreadPool& cpu_pool() { return tp; }
+    [[nodiscard]] const ThreadPool& cpu_pool() const { return tp; }
+    
+    [[nodiscard]] ServerMetrics& metrics() { return mts; }
+    [[nodiscard]] const ServerMetrics& metrics() const { return mts; }
 
     [[nodiscard]] size_t connection_count() const { return connections.size(); }
 
@@ -94,10 +98,11 @@ private:
     net::io_context& io_ctx;
     tcp::acceptor acceptor;
     net::signal_set signals;
-    net::signal_set metrics_signals;  // For SIGUSR1
+    net::signal_set metrics_signals;
     ConnectionsMap connections;
     const Config& cfg;
     ServerMetrics mts;
+    ThreadPool tp;
 };
 
 class Connection : public std::enable_shared_from_this<Connection>

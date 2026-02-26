@@ -45,8 +45,17 @@ Server::Server(net::io_context& io, const Config& config)
     , signals(io, SIGINT, SIGTERM)
     , metrics_signals(io, SIGUSR1)
     , cfg(config)
+    , tp(cfg.server().cpu_threads == 0 
+         ? std::max(2u, std::thread::hardware_concurrency() / 2)
+         : cfg.server().cpu_threads)
 {
     acceptor.set_option(net::socket_base::reuse_address(true));
+    LOG_INFO("ThreadPool initialized with {} threads", tp.size());
+}
+
+Server::~Server()
+{
+    tp.stop();
 }
 
 void Server::start()
