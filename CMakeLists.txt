@@ -58,6 +58,7 @@ add_subdirectory(fundamentals)
 add_subdirectory(crypto)
 add_subdirectory(logger)
 add_subdirectory(threadpool)
+add_subdirectory(auth)
 add_subdirectory(server)
 add_subdirectory(client)
 
