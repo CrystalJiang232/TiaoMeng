@@ -3,7 +3,8 @@
     "port": 8080,
     "bind_address": "0.0.0.0",
     "max_connections": 1000,
-    "max_message_size": 1048576
+    "max_message_size": 1048576,
+    "cpu_threads": 20
   },
   "security": {
     "max_failures_before_disconnect": 5,
@@ -18,8 +19,8 @@
   },
   "logging": {
     "level": "info",
-    "file": "",
+    "file": "a.log",
     "max_size_mb": 100,
-    "enable_console": true
+    "enable_console": false
   }
 }

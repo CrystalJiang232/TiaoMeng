@@ -98,13 +98,15 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
 
 void EventHandler::handle_command(std::shared_ptr<Connection> self, const json::object& request)
 {
+    std::ignore = request;
+
     if (!self->is_authenticated())
     {
         std::ignore = self->send_error("Not authenticated");
         return;
     }
     
-    LOG_INFO("Received command from {}: {}", self->get_id(), json::serialize(request));
+    LOG_INFO("Received command from {}", self->get_id());
     self->send_encrypted(status_msg("Success", "Command accepted by server"));
 }
 
@@ -116,7 +118,7 @@ void EventHandler::handle_broadcast(std::shared_ptr<Connection> self, const json
         return;
     }
     
-    LOG_INFO("Broadcast request from {}: {}", self->get_id(), json::serialize(request));
+    LOG_INFO("Broadcast request from {}", self->get_id());
     self->send_encrypted(status_msg("Success", "Broadcast request processed"));
 
     auto json_payload = json::serialize(json::object{{"From",self->get_id()}, {"msg", json_utils::extract_str(request,"msg").value_or("")}})
