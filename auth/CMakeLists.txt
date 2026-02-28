@@ -3,6 +3,7 @@ find_package(SQLite3 REQUIRED)
 add_library(auth STATIC
     argon2_hasher.cpp
     user_db.cpp
+    auth_manager.cpp
 )
 
 target_include_directories(auth PUBLIC ${CMAKE_SOURCE_DIR}/include)

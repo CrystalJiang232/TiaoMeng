@@ -118,7 +118,7 @@ void Connection::reset_session_timer()
     }
 }
 
-net::awaitable<Connection::IoResult> Connection::read_with_timeout(
+net::awaitable<std::optional<Connection::IoResult>> Connection::read_with_timeout(
     net::mutable_buffer buf,
     std::chrono::seconds timeout)
 {
@@ -131,20 +131,25 @@ net::awaitable<Connection::IoResult> Connection::read_with_timeout(
     {
         auto [ec, n] = co_await net::async_read(socket, buf, net::as_tuple(net::use_awaitable));
         timer.cancel();
-        co_return IoResult{ec, n, false};
+        co_return IoResult{ec, n};
     };
     
-    auto timer_op = [&]() -> net::awaitable<IoResult>
+    auto timer_op = [&]() -> net::awaitable<void>
     {
-        auto [ec] = co_await timer.async_wait(net::as_tuple(net::use_awaitable));
-        co_return IoResult{ec, 0, true};
+        std::ignore = co_await timer.async_wait(net::as_tuple(net::use_awaitable));
+        co_return;
     };
     
     auto result = co_await (read_op() || timer_op());
-    co_return result.index() == 0 ? std::get<0>(result) : std::get<1>(result);
+    if(result.index() == 0)
+    {
+        co_return std::get<0>(result);
+    }
+
+    co_return std::nullopt;
 }
 
-net::awaitable<Connection::IoResult> Connection::write_with_timeout(
+net::awaitable<std::optional<Connection::IoResult>> Connection::write_with_timeout(
     const Msg& msg,
     std::chrono::seconds timeout)
 {
@@ -159,17 +164,21 @@ net::awaitable<Connection::IoResult> Connection::write_with_timeout(
     {
         auto [ec, n] = co_await net::async_write(socket, net::buffer(buf), net::as_tuple(net::use_awaitable));
         timer.cancel();
-        co_return IoResult{ec, n, false};
+        co_return IoResult{ec, n};
     };
     
-    auto timer_op = [&]() -> net::awaitable<IoResult>
+    auto timer_op = [&]() -> net::awaitable<void>
     {
-        auto [ec] = co_await timer.async_wait(net::as_tuple(net::use_awaitable));
-        co_return IoResult{ec, 0, true};
+        std::ignore = co_await timer.async_wait(net::as_tuple(net::use_awaitable));
+        co_return;
     };
     
-    auto result = co_await (write_op() || timer_op());
-    co_return std::get<0>(result);
+    if(auto result = co_await (write_op() || timer_op()); result.index() == 0)
+    {
+        co_return std::get<IoResult>(result);
+    }
+    else
+    co_return std::nullopt;
 }
 
 net::awaitable<void> Connection::read_header()
@@ -181,10 +190,8 @@ net::awaitable<void> Connection::read_header()
         net::buffer(read_buf, 4),
         cfg.timeouts().read_timeout);
     
-    LOG_DEBUG("Connection {} read_header result: timed_out={}, ec={}, bytes={}",
-              id, result.timed_out, result.ec.message(), result.bytes);
     
-    if (result.timed_out)
+    if (!result)
     {
         if (is_pipe_dead())
         {
@@ -203,11 +210,11 @@ net::awaitable<void> Connection::read_header()
         co_return;
     }
     
-    if (result.ec)
+    if (auto e = result->ec)
     {
-        if (result.ec == net::error::eof ||
-            result.ec == net::error::connection_reset ||
-            result.ec == net::error::broken_pipe)
+        if (e == net::error::eof ||
+            e == net::error::connection_reset ||
+            e == net::error::broken_pipe)
         {
             mark_pipe_dead();
         }
@@ -217,7 +224,7 @@ net::awaitable<void> Connection::read_header()
     
     uint32_t len = to_int(read_buf);
 
-    if (result.bytes != 4 || len < 5 || len > Msg::max_len)
+    if (result->bytes != 4 || len < 5 || len > Msg::max_len)
     {
         send_raw_error("Length verification error", CloseMode::CancelOthers);
         co_return;
@@ -235,12 +242,8 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         net::buffer(read_buf.data() + 4, len - 4),
         cfg.timeouts().read_timeout);
     
-    LOG_DEBUG("Connection {} read_body result: timed_out={}, ec={}, bytes={}",
-              id, result.timed_out, result.ec.message(), result.bytes);
-    
-    if (result.timed_out)
+    if (!result)
     {
-        record_failure();
         if (is_pipe_dead())
         {
             co_return;
@@ -249,11 +252,11 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         co_return;
     }
     
-    if (result.ec)
+    if (auto e = result->ec)
     {
-        if (result.ec == net::error::eof ||
-            result.ec == net::error::connection_reset ||
-            result.ec == net::error::broken_pipe)
+        if (e == net::error::eof ||
+            e == net::error::connection_reset ||
+            e == net::error::broken_pipe)
         {
             mark_pipe_dead();
         }
@@ -261,7 +264,7 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         co_return;
     }
     
-    if (result.bytes != len - 4)
+    if (result->bytes != len - 4)
     {
         send_raw_error("Incomplete read", CloseMode::CancelOthers);
         co_return;
@@ -554,6 +557,12 @@ net::awaitable<void> Connection::handle_request(const json::object& request)
 
 void Connection::send(const Msg& msg)
 {
+    if(this->is_pipe_dead())
+    {
+        return;
+    }
+    //Shouldn't fall into recursive loop
+    //That is, new status "closing"(or alike schematic), at this status give up sending any messages  
     LOG_DEBUG("Connection {} send() called, type={}, len={}", id, static_cast<int>(msg.type), msg.len);
     net::dispatch(strand,
         [this, self = shared_from_this(), msg]()
@@ -676,12 +685,9 @@ net::awaitable<void> Connection::write()
         }
         
         auto result = co_await write_with_timeout(msg, cfg.timeouts().write_timeout);
-        LOG_DEBUG("Connection {} write result: timed_out={}, ec={}, bytes={}",
-                  id, result.timed_out, result.ec.message(), result.bytes);
-        
-        if (result.timed_out)
+
+        if (!result)
         {
-            record_failure();
             {
                 std::lock_guard lock(write_mtx);
                 write_in_progress.store(false);
@@ -691,12 +697,11 @@ net::awaitable<void> Connection::write()
             co_return;
         }
         
-        if (result.ec)
+        if (auto e = result->ec)
         {
-            LOG_DEBUG("Connection {} write error: {}", id, result.ec.message());
-            if (result.ec == net::error::eof ||
-                result.ec == net::error::connection_reset ||
-                result.ec == net::error::broken_pipe)
+            if (e == net::error::eof ||
+                e == net::error::connection_reset ||
+                e == net::error::broken_pipe)
             {
                 mark_pipe_dead();
             }
@@ -707,12 +712,11 @@ net::awaitable<void> Connection::write()
             send_raw_error("Pipe writing error", CloseMode::CancelOthers);
             co_return;
         }
-        LOG_DEBUG("Connection {} write successful, {} bytes sent", id, result.bytes);
         
         // Track bytes and messages sent
         if (server) 
         {
-            server->metrics().bytes_sent += result.bytes;
+            server->metrics().bytes_sent += result->bytes;
             server->metrics().messages_sent++;
         }
     }

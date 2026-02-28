@@ -53,12 +53,18 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
         return;
     }
 
+    if (!self->server || !self->server->has_auth())
+    {
+        std::ignore = self->send_error("Authentication unavailable");
+        return;
+    }
+
     std::string username, password;
 
     if (auto ret = json_utils::extract_str(request, "username"); !ret)
     {
         if (self->server) self->server->metrics().authentications_failed++;
-        std::ignore = self->send_error(ret.error()); //Returns anyway, uses std::ignore to bypass [[nodiscard]]
+        std::ignore = self->send_error("Authentication failed");
         return;
     }
     else
@@ -69,31 +75,64 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
     if (auto ret = json_utils::extract_str(request, "password"); !ret)
     {
         if (self->server) self->server->metrics().authentications_failed++;
-        std::ignore = self->send_error(ret.error());
+        std::ignore = self->send_error("Authentication failed");
         return;
     }
     else
     {
         password = *ret;
     }
-
-    std::ignore = username, password; //Placeholder
     
-    if(true)
+    auto future_result = self->server->cpu_pool().submit([&]() -> auth::AuthManager::AuthResult
     {
-        self->setstate(ConnState::Authenticated);
-        self->reset_failures();
-        self->send_encrypted(status_msg("Success", "Authentication successful"));
-        if (self->server) self->server->metrics().authentications_successful++;
-        LOG_INFO("Client {} authenticated", self->get_id());
-    }
-    else
+        net::io_context temp_ic;
+        auth::AuthManager::AuthResult local_result{false, false};
+        
+        net::co_spawn(temp_ic,
+            [&]() -> net::awaitable<void>
+            {
+                local_result = co_await self->server->auth().verify(username, password);
+            },
+            net::detached
+        );
+        
+        temp_ic.run();
+        return local_result;
+    });
+    
+    if (!future_result)
     {
-        std::ignore = self->send_error("Authentication Failed");
+        std::ignore = self->send_error("Authentication failed");
+        if (self->server) self->server->metrics().authentications_failed++;
         LOG_INFO("Client {} authentication failed", self->get_id());
         return;
     }
     
+    auto result = *future_result;
+    
+    if (result.locked)
+    {
+        std::ignore = self->send_error("Account locked");
+        if (self->server) self->server->metrics().authentications_failed++;
+        LOG_INFO("Client {} authentication failed: account locked", self->get_id());
+        return;
+    }
+    
+    if (!result.success)
+    {
+        std::ignore = self->send_error("Authentication failed");
+        if (self->server) self->server->metrics().authentications_failed++;
+        LOG_INFO("Client {} authentication failed", self->get_id());
+        return;
+    }
+    
+    self->server->register_user_session(username, self->get_id());
+    
+    self->setstate(ConnState::Authenticated);
+    self->reset_failures();
+    self->send_encrypted(status_msg("Success", "Authentication successful"));
+    if (self->server) self->server->metrics().authentications_successful++;
+    LOG_INFO("Client {} authenticated as {}", self->get_id(), username);
 }
 
 void EventHandler::handle_command(std::shared_ptr<Connection> self, const json::object& request)

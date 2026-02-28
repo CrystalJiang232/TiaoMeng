@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS users (
     last_login INTEGER DEFAULT 0,
     active INTEGER DEFAULT 1,
     failed_attempts INTEGER DEFAULT 0,
-    locked_until INTEGER DEFAULT 0
+    locked_until INTEGER DEFAULT 0,
+    current_conn_id TEXT DEFAULT NULL
 ) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_users_active ON users(active) WHERE active = 1;

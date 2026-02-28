@@ -72,7 +72,7 @@ bool UserDB::init_schema()
     )";
     
     char* err = nullptr;
-    int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    int rc = sqlite3_exec(db, sql, nullptr, nullptr, std::addressof(err));
     if (rc != SQLITE_OK && err)
     {
         sqlite3_free(err);
@@ -191,6 +191,68 @@ bool UserDB::clear_failed_attempts(std::string_view username)
     }
     
     sqlite3_bind_text(stmt, 1, username.data(), static_cast<int>(username.size()), SQLITE_STATIC);
+    
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+bool UserDB::set_current_conn(std::string_view username, std::string_view conn_id)
+{
+    const char* sql = "UPDATE users SET current_conn_id = ? WHERE username = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        return false;
+    }
+    
+    sqlite3_bind_text(stmt, 1, conn_id.data(), static_cast<int>(conn_id.size()), SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, username.data(), static_cast<int>(username.size()), SQLITE_STATIC);
+    
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+std::optional<std::string> UserDB::get_current_conn(std::string_view username)
+{
+    const char* sql = "SELECT current_conn_id FROM users WHERE username = ? AND active = 1;";
+    sqlite3_stmt* stmt = nullptr;
+    
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        return std::nullopt;
+    }
+    
+    sqlite3_bind_text(stmt, 1, username.data(), static_cast<int>(username.size()), SQLITE_STATIC);
+    
+    std::optional<std::string> result;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        const char* val = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (val)
+        {
+            result = std::string(val);
+        }
+    }
+    
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+bool UserDB::clear_conn_id_if_matches(std::string_view username, std::string_view conn_id)
+{
+    const char* sql = "UPDATE users SET current_conn_id = NULL WHERE username = ? AND current_conn_id = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        return false;
+    }
+    
+    sqlite3_bind_text(stmt, 1, username.data(), static_cast<int>(username.size()), SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, conn_id.data(), static_cast<int>(conn_id.size()), SQLITE_STATIC);
     
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

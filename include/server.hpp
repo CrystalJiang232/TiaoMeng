@@ -31,9 +31,8 @@
 #include "fundamentals/json_utils.hpp"
 #include "event_handler.hpp"
 #include "threadpool/threadpool.hpp"
-
-// Forward declaration
-class Config;
+#include "config.hpp"
+#include "auth/auth_manager.hpp"
 
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
@@ -85,15 +84,24 @@ public:
     [[nodiscard]] ThreadPool& cpu_pool() { return tp; }
     [[nodiscard]] const ThreadPool& cpu_pool() const { return tp; }
     
+    [[nodiscard]] auth::AuthManager& auth() { return *auth_mgr; }
+    [[nodiscard]] const auth::AuthManager& auth() const { return *auth_mgr; }
+    [[nodiscard]] bool has_auth() const { return auth_mgr.has_value(); }
+    
     [[nodiscard]] ServerMetrics& metrics() { return mts; }
     [[nodiscard]] const ServerMetrics& metrics() const { return mts; }
 
     [[nodiscard]] size_t connection_count() const { return connections.size(); }
+    
+    void kick_connection(std::string_view conn_id, std::string_view reason);
+    void register_user_session(std::string_view username, std::string_view conn_id);
+    void unregister_user_session(std::string_view username, std::string_view conn_id);
 
 private:
     net::awaitable<void> do_accept();
     void setup_signal_handlers();
     void on_signal(int signal);
+    [[nodiscard]] static size_t calc_cpu_threads(const Config::ServerCfg& srv);
     
     net::io_context& io_ctx;
     tcp::acceptor acceptor;
@@ -103,6 +111,7 @@ private:
     const Config& cfg;
     ServerMetrics mts;
     ThreadPool tp;
+    std::optional<auth::AuthManager> auth_mgr;
 };
 
 class Connection : public std::enable_shared_from_this<Connection>
@@ -165,7 +174,6 @@ private:
     {
         boost::system::error_code ec;
         size_t bytes = 0;
-        bool timed_out = false;
     };
     
     net::awaitable<void> read_header();
@@ -173,8 +181,8 @@ private:
     net::awaitable<void> write();
     net::awaitable<void> close_async(CloseMode mode = CloseMode::BestEffort);
     
-    net::awaitable<IoResult> read_with_timeout(net::mutable_buffer buf, std::chrono::seconds timeout);
-    net::awaitable<IoResult> write_with_timeout(const Msg& msg, std::chrono::seconds timeout);
+    net::awaitable<std::optional<IoResult>> read_with_timeout(net::mutable_buffer buf, std::chrono::seconds timeout);
+    net::awaitable<std::optional<IoResult>> write_with_timeout(const Msg& msg, std::chrono::seconds timeout);
     void on_global_timeout();
     void reset_global_timer(std::chrono::seconds duration);
     void cancel_global_timer();

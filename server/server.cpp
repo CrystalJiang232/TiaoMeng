@@ -1,6 +1,7 @@
 #include "server.hpp"
 #include "config.hpp"
 #include "logger/logger.hpp"
+#include "auth/argon2_hasher.hpp"
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/signal_set.hpp>
@@ -45,12 +46,59 @@ Server::Server(net::io_context& io, const Config& config)
     , signals(io, SIGINT, SIGTERM)
     , metrics_signals(io, SIGUSR1)
     , cfg(config)
-    , tp(cfg.server().cpu_threads == 0 
-         ? std::max(2u, std::thread::hardware_concurrency() / 2)
-         : cfg.server().cpu_threads)
+    , tp(calc_cpu_threads(config.server()))
 {
     acceptor.set_option(net::socket_base::reuse_address(true));
     LOG_INFO("ThreadPool initialized with {} threads", tp.size());
+    auto auth_result = auth::AuthManager::create("auth.db", tp);
+    if (auth_result)
+    {
+        auth_mgr = std::move(*auth_result);
+        if (auth_mgr->db().init_schema())
+        {
+            LOG_INFO("AuthManager initialized");
+
+            if(!auth_mgr->db().find_user("admin"))
+            {
+                
+                if(auto res = auth::Argon2Hasher::hash("123456");!res)
+                {
+                    LOG_ERROR("Hash password failed");
+                }
+                else
+                {
+                    auto rr = auth_mgr->db().create_user("admin",res->encoded);
+                    LOG_INFO("Admin user created on first startup, ret = {}, password hash = {}", rr, res->encoded);
+                }
+            }
+        }
+        else
+        {
+            LOG_WARN("Initialization of schema failed");
+        }
+    }
+    else
+    {
+        LOG_WARN("AuthManager initialization failed: {}", auth_result.error());
+    }
+}
+
+size_t Server::calc_cpu_threads(const Config::ServerCfg& srv)
+{
+    if (srv.cpu_threads != 0)
+    {
+        return srv.cpu_threads;
+    }
+    
+    size_t hw = std::thread::hardware_concurrency();
+    size_t io = srv.io_threads;
+    
+    if (hw <= io)
+    {
+        return 2;
+    }
+    
+    return std::max(2uz, hw - io);
 }
 
 Server::~Server()
@@ -138,4 +186,41 @@ void Server::broadcast(const Msg& m, std::string_view exclude_id)
     {
         conn->send_encrypted(m);
     }
+}
+
+void Server::kick_connection(std::string_view conn_id, std::string_view reason)
+{
+    auto conn = connections.find(conn_id);
+    if (!conn)
+    {
+        return;
+    }
+    
+    std::ignore = conn->send_error(reason, Connection::CloseMode::CancelOthers, true);
+}
+
+void Server::register_user_session(std::string_view username, std::string_view conn_id)
+{
+    if (!auth_mgr)
+    {
+        return;
+    }
+    
+    auto old_conn = auth_mgr->db().get_current_conn(username);
+    if (old_conn && *old_conn != conn_id)
+    {
+        kick_connection(*old_conn, "Kicked: new login");
+    }
+    
+    std::ignore = auth_mgr->db().set_current_conn(username, conn_id);
+}
+
+void Server::unregister_user_session(std::string_view username, std::string_view conn_id)
+{
+    if (!auth_mgr)
+    {
+        return;
+    }
+    
+    std::ignore = auth_mgr->db().clear_conn_id_if_matches(username, conn_id);
 }

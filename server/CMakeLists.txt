@@ -20,6 +20,7 @@ target_link_libraries(server
     fundamentals
     logger
     threadpool
+    auth
 )
 
 set_target_properties(server PROPERTIES

@@ -40,14 +40,16 @@ int main(int argc, char** argv)
         
         svr.start();
         
-        size_t thread_count = std::thread::hardware_concurrency();
+        size_t io_thread_count = config.server().io_threads;
         std::vector<std::jthread> threads;
-        threads.reserve(thread_count - 1);
+        threads.reserve(io_thread_count - 1);
         
-        for (size_t i = 1; i < thread_count; ++i)
+        for (size_t i = 1; i < io_thread_count; ++i)
         {
             threads.emplace_back([&ic] { ic.run(); });
         }
+        
+        LOG_INFO("I/O threads: {}, CPU pool threads: {}", io_thread_count, svr.cpu_pool().size());
         
         ic.run();
     }

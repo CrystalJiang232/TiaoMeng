@@ -22,6 +22,7 @@ public:
         std::string bind_address = "0.0.0.0";
         size_t max_connections = 1000;
         size_t max_message_size = 1024 * 1024;
+        size_t io_threads = 4;
         size_t cpu_threads = 0;
     };
 

@@ -29,6 +29,10 @@ public:
     
     [[nodiscard]] bool record_failed_attempt(std::string_view username);
     [[nodiscard]] bool clear_failed_attempts(std::string_view username);
+    
+    [[nodiscard]] bool set_current_conn(std::string_view username, std::string_view conn_id);
+    [[nodiscard]] std::optional<std::string> get_current_conn(std::string_view username);
+    [[nodiscard]] bool clear_conn_id_if_matches(std::string_view username, std::string_view conn_id);
 
 private:
     explicit UserDB(sqlite3* db);

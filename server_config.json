@@ -4,7 +4,8 @@
     "bind_address": "0.0.0.0",
     "max_connections": 1000,
     "max_message_size": 1048576,
-    "cpu_threads": 20
+    "io_threads": 4,
+    "cpu_threads": 16
   },
   "security": {
     "max_failures_before_disconnect": 5,
@@ -18,7 +19,7 @@
     "write_timeout_sec": 30
   },
   "logging": {
-    "level": "info",
+    "level": "debug",
     "file": "a.log",
     "max_size_mb": 100,
     "enable_console": false
