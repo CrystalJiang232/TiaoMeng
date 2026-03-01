@@ -1,6 +1,7 @@
 #include "auth/user_db.hpp"
 
 #include <ctime>
+#include <vector>
 
 namespace auth
 {
@@ -65,7 +66,8 @@ bool UserDB::init_schema()
             last_login INTEGER DEFAULT 0,
             active INTEGER DEFAULT 1,
             failed_attempts INTEGER DEFAULT 0,
-            locked_until INTEGER DEFAULT 0
+            locked_until INTEGER DEFAULT 0,
+            current_conn_id TEXT DEFAULT NULL
         ) WITHOUT ROWID;
         
         CREATE INDEX IF NOT EXISTS idx_users_active ON users(active) WHERE active = 1;
@@ -101,7 +103,7 @@ bool UserDB::create_user(std::string_view username, std::string_view password_ha
 
 std::optional<UserRecord> UserDB::find_user(std::string_view username)
 {
-    const char* sql = "SELECT username, password_hash, created_at, last_login, active, failed_attempts, locked_until FROM users WHERE username = ? AND active = 1;";
+    const char* sql = "SELECT username, password_hash, created_at, last_login, active, failed_attempts, locked_until, current_conn_id FROM users WHERE username = ? AND active = 1";
     sqlite3_stmt* stmt = nullptr;
     
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
@@ -120,6 +122,10 @@ std::optional<UserRecord> UserDB::find_user(std::string_view username)
         rec.created_at = sqlite3_column_int64(stmt, 2);
         rec.last_login = sqlite3_column_int64(stmt, 3);
         rec.active = sqlite3_column_int(stmt, 4) != 0;
+        if (sqlite3_column_type(stmt, 7) != SQLITE_NULL)
+        {
+            rec.current_conn_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        }
         rec.lockout_placeholder = std::expected<int, uint64_t>(0);
         result = std::move(rec);
     }
@@ -257,6 +263,72 @@ bool UserDB::clear_conn_id_if_matches(std::string_view username, std::string_vie
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     return rc == SQLITE_DONE;
+}
+
+std::vector<UserRecord> UserDB::list_users()
+{
+    const char* sql = "SELECT username, password_hash, created_at, last_login, active, failed_attempts, locked_until, current_conn_id FROM users";
+    sqlite3_stmt* stmt = nullptr;
+    std::vector<UserRecord> result;
+    
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        return result;
+    }
+    
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        UserRecord rec;
+        rec.username = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        rec.password_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        rec.created_at = sqlite3_column_int64(stmt, 2);
+        rec.last_login = sqlite3_column_int64(stmt, 3);
+        rec.active = sqlite3_column_int(stmt, 4) != 0;
+        if (sqlite3_column_type(stmt, 7) != SQLITE_NULL)
+        {
+            rec.current_conn_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        }
+        rec.lockout_placeholder = std::expected<int, uint64_t>(0);
+        result.push_back(std::move(rec));
+    }
+    
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+bool UserDB::activate_user(std::string_view username)
+{
+    const char* sql = "UPDATE users SET active = 1 WHERE username = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        return false;
+    }
+    
+    sqlite3_bind_text(stmt, 1, username.data(), static_cast<int>(username.size()), SQLITE_STATIC);
+    
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE && sqlite3_changes(db) > 0;
+}
+
+bool UserDB::update_password(std::string_view username, std::string_view password_hash)
+{
+    const char* sql = "UPDATE users SET password_hash = ? WHERE username = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        return false;
+    }
+    
+    sqlite3_bind_text(stmt, 1, password_hash.data(), static_cast<int>(password_hash.size()), SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, username.data(), static_cast<int>(username.size()), SQLITE_STATIC);
+    
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE && sqlite3_changes(db) > 0;
 }
 
 }

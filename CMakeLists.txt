@@ -61,6 +61,7 @@ add_subdirectory(threadpool)
 add_subdirectory(auth)
 add_subdirectory(server)
 add_subdirectory(client)
+add_subdirectory(tools)
 
 if(MSG_SVR_BUILD_MODE STREQUAL "TEST")
     include(FetchContent)

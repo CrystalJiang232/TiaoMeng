@@ -160,6 +160,9 @@ public:
     [[nodiscard]] bool has_session_key() const { return sess.is_established(); }
     [[nodiscard]] std::span<const uint8_t> session_key() const { return sess.key(); }
     [[nodiscard]] bool is_authenticated() const { return state == ConnState::Authenticated; }
+    [[nodiscard]] std::string_view get_auth_user() const { return auth_user; }
+    void set_auth_user(std::string_view user) { auth_user = std::string(user); }
+    void clear_auth_user() { auth_user.clear(); }
     
     bool record_failure() { return fail_tracker.record(); }
     void reset_failures() { fail_tracker.reset(); }
@@ -219,6 +222,7 @@ private:
     std::atomic<bool> dead_pipe{false};
     const Config& cfg;
     net::steady_timer global_timer;
+    std::string auth_user;
 
     friend class EventHandler;
 };

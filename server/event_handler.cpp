@@ -41,6 +41,16 @@ void EventHandler::route(std::shared_ptr<Connection> conn, const json::object& r
         return;
     }
     
+    if (conn->is_authenticated() && !conn->get_auth_user().empty() && conn->server && conn->server->has_auth())
+    {
+        auto current = conn->server->auth().db().get_current_conn(conn->get_auth_user());
+        if (!current || *current != conn->get_id())
+        {
+            std::ignore = conn->send_error("Session terminated", Connection::CloseMode::CancelOthers, true);
+            return;
+        }
+    }
+    
     conn->reset_session_timer();
     handler_it->second(conn, request);
 }
@@ -128,6 +138,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
     
     self->server->register_user_session(username, self->get_id());
     
+    self->set_auth_user(username);
     self->setstate(ConnState::Authenticated);
     self->reset_failures();
     self->send_encrypted(status_msg("Success", "Authentication successful"));
@@ -181,6 +192,8 @@ void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::o
     if (self->getstate() == ConnState::Authenticated)
     {
         self->setstate(ConnState::Established);
+        std::ignore = self->server->auth().db().clear_conn_id_if_matches(self->get_auth_user(), self->get_id()); //Server-side
+        self->clear_auth_user(); //Connection-side
         self->reset_failures();
         self->send_encrypted(status_msg("Success", "Logged out successfully"));
         LOG_INFO("Client {} logged out", self->get_id());

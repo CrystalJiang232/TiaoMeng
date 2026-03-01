@@ -61,14 +61,16 @@ Server::Server(net::io_context& io, const Config& config)
             if(!auth_mgr->db().find_user("admin"))
             {
                 
-                if(auto res = auth::Argon2Hasher::hash("123456");!res)
+                if(auto res = auth::Argon2Hasher::hash("12345678");!res)
                 {
                     LOG_ERROR("Hash password failed");
                 }
                 else
                 {
-                    auto rr = auth_mgr->db().create_user("admin",res->encoded);
-                    LOG_INFO("Admin user created on first startup, ret = {}, password hash = {}", rr, res->encoded);
+                    if (auto rr = auth_mgr->db().create_user("admin",res->encoded); rr)
+                    {
+                        LOG_INFO("Admin user created on first startup, ret = {}, password hash = {}", rr, res->encoded);
+                    }
                 }
             }
         }
@@ -181,9 +183,11 @@ void Server::broadcast(const Msg& m, std::string_view exclude_id)
     for (auto& conn : connections.snapshot() | std::views::filter([this, exclude_id](auto&& x){
         return x && 
             !x->is_pipe_dead() && 
-            x->get_id() != exclude_id;
+            x->get_id() != exclude_id && 
+            x->is_authenticated();
         })) //Lifetime extension?  
     {
+        
         conn->send_encrypted(m);
     }
 }

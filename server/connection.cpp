@@ -724,6 +724,8 @@ net::awaitable<void> Connection::write()
 
 void Connection::cancel_all_io()
 {
+    this->mark_pipe_dead(); //Send cancel signal
+
     boost::system::error_code ec;
     socket.cancel(ec);
 }
@@ -798,6 +800,7 @@ void Connection::send_raw_error(std::string_view err, CloseMode mode)
 {
     LOG_DEBUG("Connection {} send_raw_error: {}", id, err);
     static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
+    
     auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
     send(err_msg);
     close(mode);
@@ -806,7 +809,12 @@ void Connection::send_raw_error(std::string_view err, CloseMode mode)
 bool Connection::send_error(std::string_view err, CloseMode mode, bool force_close)
 {
     LOG_DEBUG("Connection {} send_error: {}", id, err);
-    send_encrypted(status_msg("Error", err), encrypted_error);
+
+    if(!is_pipe_dead())
+    {
+        send_encrypted(status_msg("Error", err), encrypted_error);
+    }
+    
     if (force_close || record_failure())
     {
         close(mode);
