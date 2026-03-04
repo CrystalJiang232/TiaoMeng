@@ -39,7 +39,8 @@ int main(int argc, char** argv)
         LOG_INFO("Server starting on {}:{}", config.server().bind_address, config.server().port);
         
         svr.start();
-        
+        //Thread-per-core structure: permenant-running stuffs
+        // Consider using other platform-specific approaches to completely surpress context switch overhead  
         size_t io_thread_count = config.server().io_threads;
         std::vector<std::jthread> threads;
         threads.reserve(io_thread_count - 1);

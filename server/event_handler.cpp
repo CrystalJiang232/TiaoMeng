@@ -43,11 +43,9 @@ void EventHandler::route(std::shared_ptr<Connection> conn, const json::object& r
     
     if (conn->is_authenticated() && !conn->get_auth_user().empty() && conn->server && conn->server->has_auth())
     {
-        auto current = conn->server->auth().db().get_current_conn(conn->get_auth_user());
-        if (!current || *current != conn->get_id())
+        if (!conn->server->validate_conn(conn->get_auth_user(), conn->get_id()))
         {
-            std::ignore = conn->send_error("Session terminated", Connection::CloseMode::CancelOthers, true);
-            return;
+            conn->error_and_close("Session terminated");
         }
     }
     

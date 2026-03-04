@@ -80,6 +80,8 @@ public:
     void start();
     void remove_connection(std::string_view id);
     void broadcast(const Msg& msg, std::string_view exclude_id = "");
+
+    [[nodiscard]] bool validate_conn(std::string_view username, std::string_view conn_id);
     
     [[nodiscard]] ThreadPool& cpu_pool() { return tp; }
     [[nodiscard]] const ThreadPool& cpu_pool() const { return tp; }
@@ -119,10 +121,8 @@ class Connection : public std::enable_shared_from_this<Connection>
 public:
     enum class CloseMode
     {
-        DrainPipe,
-        BestEffort,
-        CancelOthers,
-        Abort
+        Graceful,
+        Immediate
     };
     
     struct FailureTracker
@@ -132,7 +132,8 @@ public:
         
         explicit FailureTracker(size_t max_fail = 5) : max_failures(max_fail) {}
         
-        [[nodiscard("record() returns whether count has exceeded max failure after pre self-increment.")]] bool record()
+        [[nodiscard("record() returns whether count has exceeded max failure after pre self-increment.")]] 
+        bool record()
         {
             return ++count >= max_failures;
         }
@@ -151,10 +152,10 @@ public:
     [[nodiscard]] ConnState getstate() const { return state.load(std::memory_order_acquire); }
     void setstate(ConnState newstate) { state.store(newstate, std::memory_order_release); }
 
-    void close(CloseMode mode = CloseMode::CancelOthers);
+    void close(CloseMode mode = CloseMode::Graceful);
     
-    void mark_pipe_dead() { dead_pipe.store(true); }
-    [[nodiscard]] bool is_pipe_dead() const { return dead_pipe.load() || !socket.is_open(); }
+    [[nodiscard]] bool is_closing() const {return this->state.load() == ConnState::Closing;}
+
     void shutdown() noexcept;
     
     [[nodiscard]] bool has_session_key() const { return sess.is_established(); }
@@ -167,11 +168,12 @@ public:
     bool record_failure() { return fail_tracker.record(); }
     void reset_failures() { fail_tracker.reset(); }
 
-    void send_raw_error(std::string_view err, CloseMode mode = CloseMode::CancelOthers);
+    void send_raw_error(std::string_view err, CloseMode mode = CloseMode::Graceful);
     [[nodiscard("Do not discard send_error's value: caller is responsible for co_return upon this function returning true to prevent connection leakage. Use std::ignore or void cast for explicit schematics.")]]
-    bool send_error(std::string_view err, CloseMode mode = CloseMode::CancelOthers, bool force_close = false);
+    bool send_error(std::string_view err, CloseMode mode = CloseMode::Graceful, bool force_close = false);
     void reset_session_timer();
-    
+    void error_and_close(std::string_view err_text);
+
 private:
     struct IoResult
     {
@@ -182,13 +184,14 @@ private:
     net::awaitable<void> read_header();
     net::awaitable<void> read_body(uint32_t len);
     net::awaitable<void> write();
-    net::awaitable<void> close_async(CloseMode mode = CloseMode::BestEffort);
+    net::awaitable<void> close_async(CloseMode mode = CloseMode::Graceful);
     
     net::awaitable<std::optional<IoResult>> read_with_timeout(net::mutable_buffer buf, std::chrono::seconds timeout);
     net::awaitable<std::optional<IoResult>> write_with_timeout(const Msg& msg, std::chrono::seconds timeout);
     void on_global_timeout();
     void reset_global_timer(std::chrono::seconds duration);
     void cancel_global_timer();
+    
     
     void cancel_all_io();
     void clear_write_queue();
@@ -219,7 +222,6 @@ private:
     std::atomic<ConnState> state;
     std::atomic<bool> write_in_progress{false};
     FailureTracker fail_tracker;
-    std::atomic<bool> dead_pipe{false};
     const Config& cfg;
     net::steady_timer global_timer;
     std::string auth_user;

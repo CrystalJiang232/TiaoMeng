@@ -98,14 +98,31 @@ void Connection::on_global_timeout()
 {
     if (server) server->metrics().timeouts++;
     auto st = state.load(std::memory_order_acquire);
-    if (st == ConnState::Connected || st == ConnState::Handshaking)
+
+    switch (st)
     {
-        if (server) server->metrics().handshakes_failed++;
-        send_raw_error("Handshake timeout", CloseMode::CancelOthers);
-    }
-    else if (st == ConnState::Established || st == ConnState::Authenticated)
-    {
-        std::ignore = send_error("Session timeout", CloseMode::CancelOthers, true);
+    case ConnState::Connected:
+        [[fallthrough]];
+    case ConnState::Handshaking:
+        if(server)
+        {
+            server->metrics().handshakes_failed++;
+            send_raw_error("Handshake timeout");
+        }
+        break;
+
+    case ConnState::Established:
+        [[fallthrough]];
+    case ConnState::Authenticated:
+        if(server)
+        {
+            server->metrics().timeouts++;
+            std::ignore = send_error("Session timeout", CloseMode::Graceful, true);
+        }
+        break;
+
+    case ConnState::Closing:
+        break;
     }
 }
 
@@ -122,6 +139,11 @@ net::awaitable<std::optional<Connection::IoResult>> Connection::read_with_timeou
     net::mutable_buffer buf,
     std::chrono::seconds timeout)
 {
+    if(is_closing())
+    {
+        co_return std::nullopt;
+    }
+    
     using net::experimental::awaitable_operators::operator||;
     
     net::steady_timer timer(strand);
@@ -153,6 +175,11 @@ net::awaitable<std::optional<Connection::IoResult>> Connection::write_with_timeo
     const Msg& msg,
     std::chrono::seconds timeout)
 {
+    if(is_closing())
+    {
+        co_return std::nullopt;
+    }
+
     using net::experimental::awaitable_operators::operator||;
     
     net::steady_timer timer(strand);
@@ -177,12 +204,17 @@ net::awaitable<std::optional<Connection::IoResult>> Connection::write_with_timeo
     {
         co_return std::get<IoResult>(result);
     }
-    else
+    
     co_return std::nullopt;
 }
 
 net::awaitable<void> Connection::read_header()
 {
+    if(is_closing())
+    {
+        co_return;
+    }
+
     LOG_DEBUG("Connection {} read_header waiting for 4 bytes", id);
     read_buf.resize(4);
 
@@ -193,20 +225,7 @@ net::awaitable<void> Connection::read_header()
     
     if (!result)
     {
-        if (is_pipe_dead())
-        {
-            co_return;
-        }
-
-        if(has_session_key())
-        {
-            //Encrypted error
-            std::ignore = send_error("Read header timeout", CloseMode::CancelOthers, true);
-        }
-        else
-        {
-            send_raw_error("Read header timeout", CloseMode::CancelOthers);
-        }
+        error_and_close("Read header timeout");
         co_return;
     }
     
@@ -216,9 +235,8 @@ net::awaitable<void> Connection::read_header()
             e == net::error::connection_reset ||
             e == net::error::broken_pipe)
         {
-            mark_pipe_dead();
         }
-        send_raw_error("Read header error", CloseMode::CancelOthers);
+        error_and_close("Read header error");
         co_return;
     }
     
@@ -226,7 +244,7 @@ net::awaitable<void> Connection::read_header()
 
     if (result->bytes != 4 || len < 5 || len > Msg::max_len)
     {
-        send_raw_error("Length verification error", CloseMode::CancelOthers);
+        error_and_close("Length verification error");
         co_return;
     }
 
@@ -236,6 +254,11 @@ net::awaitable<void> Connection::read_header()
 net::awaitable<void> Connection::read_body(uint32_t len)
 {
     LOG_DEBUG("Connection {} read_body waiting for {} bytes (total len={})", id, len - 4, len);
+    if(is_closing())
+    {
+        co_return;
+    }
+
     read_buf.resize(len);
 
     auto result = co_await read_with_timeout(
@@ -244,44 +267,34 @@ net::awaitable<void> Connection::read_body(uint32_t len)
     
     if (!result)
     {
-        if (is_pipe_dead())
-        {
-            co_return;
-        }
-        send_raw_error("Read body timeout", CloseMode::CancelOthers);
+        error_and_close("Read body timeout");
         co_return;
     }
     
     if (auto e = result->ec)
     {
-        if (e == net::error::eof ||
-            e == net::error::connection_reset ||
-            e == net::error::broken_pipe)
-        {
-            mark_pipe_dead();
-        }
-        send_raw_error("Pipe reading error", CloseMode::CancelOthers);
+        error_and_close("Pipe reading error");
         co_return;
     }
     
     if (result->bytes != len - 4)
     {
-        send_raw_error("Incomplete read", CloseMode::CancelOthers);
+        error_and_close("Incomplete read");
         co_return;
     }
     
     // Track bytes received
     if (server) server->metrics().bytes_received += len;
     
+    // Message parsing
     auto m0 = msg::parse(read_buf);
     if (!m0)
     {
         LOG_DEBUG("Connection {} message parse error, errc={}", id, std::to_underlying(m0.error()));
-        if (send_error("Message parse error", CloseMode::CancelOthers))
+        if (send_error("Message parse error"))
         {
             co_return;
         }
-        co_return;
     }
     
     auto& msg = *m0;
@@ -290,34 +303,50 @@ net::awaitable<void> Connection::read_body(uint32_t len)
     LOG_DEBUG("Connection {} received message: type={}, semantic={}, encrypted={}, payload_size={}", 
               id, static_cast<int>(msg.type), std::to_underlying(semantic), encrypted, msg.payload.size());
     
-    if (state.load(std::memory_order_acquire) == ConnState::Connected || state.load(std::memory_order_acquire) == ConnState::Handshaking)
+    
+    // Connection state verification
+    switch(auto st = state.load(std::memory_order_acquire))
     {
+        case ConnState::Connected:
+        [[fallthrough]];
+        case ConnState::Handshaking:
         if (encrypted)
         {
-            send_raw_error("Encrypted messages not allowed during handshake", CloseMode::CancelOthers);
+            error_and_close("Encrypted messages not allowed during handshake");
             co_return;
         }
         if (semantic != MsgSemantic::Handshake)
         {
-            send_raw_error("Only Handshake semantic allowed during handshake", CloseMode::CancelOthers);
+            error_and_close("Only Handshake semantic allowed during handshake");
             co_return;
         }
-    }
-    else
-    {
+        break;
+        
+        case ConnState::Established:
+        [[fallthrough]];
+        case ConnState::Authenticated:
         if (!encrypted)
         {
-            std::ignore = send_error("Plaintext messages not allowed after handshake", CloseMode::CancelOthers);
-            co_return;
+            if(send_error("Plaintext messages not allowed after handshake"))
+            {
+                co_return;
+            }
         }
+        break;
+
+        case ConnState::Closing:
+        co_return;
+
+        default:
+        error_and_close("Invalid state occur!"); //TCP Analogy: RST
+        LOG_ERROR("Invalid state occur @ {}: state = {}", get_id(), std::to_underlying(st));
+        co_return;
     }
-    
+
     switch(semantic)
     {
     case MsgSemantic::Handshake:
-        LOG_DEBUG("Connection {} routing to handle_handshake", id);
         co_await handle_handshake(msg);
-        LOG_DEBUG("Connection {} returned from handle_handshake", id);
         break;
         
     case MsgSemantic::Request:
@@ -325,7 +354,7 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         break;
     
     case MsgSemantic::Session:
-        std::ignore = send_error("Session management not implemented", CloseMode::CancelOthers);
+        std::ignore = send_error("Session management not implemented");
         co_return;
         
     case MsgSemantic::Control:
@@ -335,10 +364,10 @@ net::awaitable<void> Connection::read_body(uint32_t len)
     case MsgSemantic::Notify:
     [[fallthrough]];
     case MsgSemantic::Error:
-        std::ignore = send_error("Invalid message direction: Server-to-client semantic received from client", CloseMode::CancelOthers);
+        error_and_close("Invalid message direction: Server-to-client semantic received from client");
         co_return;
     default:
-        std::ignore = send_error(std::format("Invalid message semantic {}", std::to_underlying(semantic)), CloseMode::CancelOthers);
+        error_and_close(std::format("Invalid message semantic {}", std::to_underlying(semantic)));
         co_return;
     }
 
@@ -348,25 +377,22 @@ net::awaitable<void> Connection::read_body(uint32_t len)
 
 net::awaitable<void> Connection::handle_handshake(const Msg& msg)
 {
-    LOG_DEBUG("Connection {} handle_handshake entered, current state={}", id, std::to_underlying(state.load()));
-    switch(state)
+    switch(state.load())
     {
     case ConnState::Connected:
     {
-        LOG_DEBUG("Connection {} handshake state=Connected, payload_size={}", id, msg.payload.size());
         if (msg.payload.size() != Kyber768::public_key_size)
         {
             send_raw_error(std::format("Invalid client public key size: expected {}, got {}",
-                Kyber768::public_key_size, msg.payload.size()), CloseMode::CancelOthers);
+                Kyber768::public_key_size, msg.payload.size()));
             co_return;
         }
         
         auto kp_result = kem.generate_keypair();
-        LOG_DEBUG("Connection {} keypair generated, success={}", id, kp_result.has_value());
         if (!kp_result)
         {
             if (server) server->metrics().handshakes_failed++;
-            send_raw_error("Failed to generate keypair", CloseMode::CancelOthers);
+            send_raw_error("Failed to generate keypair");
             co_return;
         }
         kp = std::move(*kp_result);
@@ -377,11 +403,10 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         );
 
         auto encap_result = kem.encapsulate(cpk);
-        LOG_DEBUG("Connection {} encapsulate success={}", id, encap_result.has_value());
         if (!encap_result)
         {
             if (server) server->metrics().handshakes_failed++;
-            send_raw_error("Failed to encapsulate to client public key", CloseMode::CancelOthers);
+            send_raw_error("Failed to encapsulate to client public key");
             co_return;
         }
         ss_A = std::move(encap_result->shared_secret);
@@ -396,7 +421,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         LOG_DEBUG("Connection {} msg::make success={}", id, send_result.has_value());
         if (!send_result)
         {
-            send_raw_error(std::format("Failed to create handshake message, errc = {}", std::to_underlying(send_result.error())), CloseMode::CancelOthers);
+            send_raw_error(std::format("Failed to create handshake message, errc = {}", std::to_underlying(send_result.error())));
             co_return;
         }
         LOG_DEBUG("Connection {} calling send() with handshake response", id);
@@ -414,7 +439,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         if (msg.payload.size() < Kyber768::ciphertext_size)
         {
             send_raw_error(std::format("Invalid handshake payload size: expected at least {}, got {}",
-                Kyber768::ciphertext_size, msg.payload.size()), CloseMode::CancelOthers);
+                Kyber768::ciphertext_size, msg.payload.size()));
             co_return;
         }
         
@@ -427,7 +452,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         if (!decap_result)
         {
             if (server) server->metrics().handshakes_failed++;
-            send_raw_error("Failed to decapsulate client ciphertext", CloseMode::CancelOthers);
+            send_raw_error("Failed to decapsulate client ciphertext");
             co_return;
         }
         ss_local = std::move(*decap_result);
@@ -436,7 +461,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         if (!encap_result)
         {
             if (server) server->metrics().handshakes_failed++;
-            send_raw_error("Failed to encapsulate to client public key", CloseMode::CancelOthers);
+            send_raw_error("Failed to encapsulate to client public key");
             co_return;
         }
         ss_remote = std::move(encap_result->shared_secret);
@@ -455,7 +480,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto encrypted = sess.encrypt(plaintext);
         if (!encrypted)
         {
-            std::ignore = send_error("Failed to encrypt handshake response", CloseMode::CancelOthers);
+            LOG_ERROR("Failed to encrypt handshake response");
+            error_and_close("Failed to encrypt handshake response");
             co_return;
         }
         
@@ -466,7 +492,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto send_result = msg::make(payload, encrypted_response);
         if (!send_result)
         {
-            std::ignore = send_error("Failed to create encrypted response message", CloseMode::CancelOthers);
+            LOG_ERROR("Failed to create encrypted response message");
+            error_and_close("Failed to create encrypted response message");
             co_return;
         }
         send(*send_result);
@@ -489,26 +516,24 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
     case ConnState::Established:
     [[fallthrough]];
     case ConnState::Authenticated:
-        std::ignore = send_error("Handshake already completed", CloseMode::CancelOthers);
+        std::ignore = send_error("Handshake already completed");
         co_return;
     
+    case ConnState::Closing:
+        co_return;
+
     default:
-        std::ignore = send_error("Invalid state for handshake", CloseMode::CancelOthers);
+        LOG_ERROR("Invalid state for handshake for id = {}",get_id());
+        error_and_close("Invalid state for handshake");
         co_return;
     }
 }
 
 net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 {
-    if (state.load(std::memory_order_acquire) != ConnState::Established && state.load(std::memory_order_acquire) != ConnState::Authenticated)
-    {
-        send_raw_error("Invalid state: encrypted connection not yet established", CloseMode::CancelOthers);
-        co_return;
-    }
-
     if (!sess.is_established())
     {
-        send_raw_error("Session key not established", CloseMode::CancelOthers);
+        send_raw_error("Session key not established");
         co_return;
     }
 
@@ -520,7 +545,8 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
     if (!decrypted)
     {
         if (server) server->metrics().errors++;
-        std::ignore = send_error("Decryption failed", CloseMode::CancelOthers);
+        LOG_ERROR("Decryption failed in connection with {}", get_id());
+        std::ignore = send_error("Decryption failed");
         co_return;
     }
     
@@ -535,13 +561,13 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
     auto parsed = json::parse(json_str, ec);
     if (ec)
     {
-        std::ignore = send_error("Invalid JSON", CloseMode::CancelOthers);
+        std::ignore = send_error("Invalid JSON");
         co_return;
     }
     
     if (!parsed.is_object())
     {
-        std::ignore = send_error("Request must be JSON object", CloseMode::CancelOthers);
+        std::ignore = send_error("Request must be JSON object");
         co_return;
     }
     
@@ -550,6 +576,10 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 
 net::awaitable<void> Connection::handle_request(const json::object& request)
 {
+    if(is_closing())
+    {
+        co_return;
+    }
     if (server) server->metrics().messages_received++;
     evt_hdl.route(shared_from_this(), request);
     co_return;
@@ -557,12 +587,14 @@ net::awaitable<void> Connection::handle_request(const json::object& request)
 
 void Connection::send(const Msg& msg)
 {
-    if(this->is_pipe_dead())
+    if(is_closing())
     {
         return;
     }
-    //Shouldn't fall into recursive loop
-    //That is, new status "closing"(or alike schematic), at this status give up sending any messages  
+    //Avoid falling into recursive loop
+    //Upon closing, give up appending anything else into the write queue or dispatching any coroutines
+    //Queue-draining is `close()` responsibility
+
     LOG_DEBUG("Connection {} send() called, type={}, len={}", id, static_cast<int>(msg.type), msg.len);
     net::dispatch(strand,
         [this, self = shared_from_this(), msg]()
@@ -664,52 +696,49 @@ void Connection::send_encrypted(const Msg& msg)
 
 net::awaitable<void> Connection::write()
 {
-    LOG_DEBUG("Connection {} write() entered", id);
+    if(is_closing())
+    {
+        //Do not clear writing queue: 
+        // queue should either be drained by spawned coroutine, or be cleared by shutdown(immediate schematic)
+        co_return;
+    }
+
     while (true)
     {
         Msg msg;
         {
-            LOG_DEBUG("Connection {} write() attempting to lock write_mtx", id);
             std::lock_guard lock(write_mtx);
-            LOG_DEBUG("Connection {} write() acquired write_mtx", id);
             if (write_queue.empty())
             {
-                LOG_DEBUG("Connection {} write queue empty, exiting", id);
                 write_in_progress.store(false);
                 co_return;
             }
             msg = std::move(write_queue.front());
             write_queue.pop_front();
-            LOG_DEBUG("Connection {} write popped message from queue, {} remaining", id, write_queue.size());
-            LOG_DEBUG("Connection {} write() releasing write_mtx", id);
         }
         
         auto result = co_await write_with_timeout(msg, cfg.timeouts().write_timeout);
 
         if (!result)
+        //Write timeout, give up writing lingering data
         {
             {
                 std::lock_guard lock(write_mtx);
                 write_in_progress.store(false);
-                clear_write_queue();
+                write_queue.clear();
             }
-            send_raw_error("Write timeout", CloseMode::CancelOthers);
+            error_and_close("Write timeout");
             co_return;
         }
         
         if (auto e = result->ec)
         {
-            if (e == net::error::eof ||
-                e == net::error::connection_reset ||
-                e == net::error::broken_pipe)
-            {
-                mark_pipe_dead();
-            }
+            LOG_WARN("Error occur in write to {}: {}", get_id(), e.message());
             {
                 std::lock_guard lock(write_mtx);
                 write_in_progress.store(false);
             }
-            send_raw_error("Pipe writing error", CloseMode::CancelOthers);
+            error_and_close("Pipe writing error");
             co_return;
         }
         
@@ -724,8 +753,6 @@ net::awaitable<void> Connection::write()
 
 void Connection::cancel_all_io()
 {
-    this->mark_pipe_dead(); //Send cancel signal
-
     boost::system::error_code ec;
     socket.cancel(ec);
 }
@@ -739,10 +766,11 @@ void Connection::shutdown() noexcept
 {
     try
     {
-        cancel_all_io();
-        clear_write_queue();
-        
+        state.store(ConnState::Closing);
+
         boost::system::error_code ec;
+        socket.cancel(ec);
+        write_queue.clear();
         socket.close(ec);
     }
     catch (...)
@@ -753,28 +781,13 @@ void Connection::shutdown() noexcept
 
 net::awaitable<void> Connection::close_async(CloseMode mode)
 {
-    
-    if (is_pipe_dead())
-    {
-        mode = CloseMode::Abort;
-    }
-    
     switch (mode)
     {
-    case CloseMode::DrainPipe:
+    case CloseMode::Graceful:
         co_await write();
         break;
-        
-    case CloseMode::BestEffort:
-        // Just let pending writes complete naturally
-        break;
-        
-    case CloseMode::CancelOthers:
-        cancel_all_io();
-        clear_write_queue();
-        break;
-        
-    case CloseMode::Abort:
+
+    case CloseMode::Immediate:
         shutdown();
         break;
     }
@@ -785,7 +798,15 @@ net::awaitable<void> Connection::close_async(CloseMode mode)
 
 void Connection::close(CloseMode mode)
 {
-    LOG_DEBUG("Connection {} close() called, mode={}", id, std::to_underlying(mode));
+    // Rush E: don't wait for close_async to exchange
+    // Optionally specify another memory order for performance optimization?  
+    if(this->state.exchange(ConnState::Closing) == ConnState::Closing)
+    {
+        LOG_DEBUG("Connection already closing, deferring");
+        return;
+    }
+
+    //Only one closing coroutine should be spawned
     net::co_spawn(strand,
         [self = shared_from_this(), mode]() -> net::awaitable<void>
         {
@@ -798,27 +819,49 @@ void Connection::close(CloseMode mode)
 //Defaults to force close
 void Connection::send_raw_error(std::string_view err, CloseMode mode)
 {
+    if(is_closing())
+    {
+        return;
+    }
+
     LOG_DEBUG("Connection {} send_raw_error: {}", id, err);
     static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
-    
+
     auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
-    send(err_msg);
+    send(err_msg); //sends anyway
     close(mode);
 }
 
 bool Connection::send_error(std::string_view err, CloseMode mode, bool force_close)
 {
-    LOG_DEBUG("Connection {} send_error: {}", id, err);
-
-    if(!is_pipe_dead())
+    if(is_closing())
     {
-        send_encrypted(status_msg("Error", err), encrypted_error);
+        return true; //"Exception" spreading
     }
-    
+
+    LOG_DEBUG("Connection {} send_error: {}", id, err);
+    send_encrypted(status_msg("Error", err), encrypted_error);
     if (force_close || record_failure())
     {
         close(mode);
         return true;
     }
     return false;
+}
+
+void Connection::error_and_close(std::string_view err_text)
+{
+    if(is_closing()) //Already closing, do not append any error texts into it(mostly caused by write/read functions)
+    {
+        return;
+    }
+
+    if(has_session_key())
+    {
+        std::ignore = send_error(err_text, CloseMode::Graceful, true);
+    }
+    else
+    {
+        send_raw_error(err_text, CloseMode::Graceful);
+    }
 }

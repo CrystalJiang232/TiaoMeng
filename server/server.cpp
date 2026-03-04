@@ -48,8 +48,8 @@ Server::Server(net::io_context& io, const Config& config)
     , cfg(config)
     , tp(calc_cpu_threads(config.server()))
 {
-    acceptor.set_option(net::socket_base::reuse_address(true));
     LOG_INFO("ThreadPool initialized with {} threads", tp.size());
+    acceptor.set_option(net::socket_base::reuse_address(true));
     auto auth_result = auth::AuthManager::create("auth.db", tp);
     if (auth_result)
     {
@@ -57,22 +57,6 @@ Server::Server(net::io_context& io, const Config& config)
         if (auth_mgr->db().init_schema())
         {
             LOG_INFO("AuthManager initialized");
-
-            if(!auth_mgr->db().find_user("admin"))
-            {
-                
-                if(auto res = auth::Argon2Hasher::hash("12345678");!res)
-                {
-                    LOG_ERROR("Hash password failed");
-                }
-                else
-                {
-                    if (auto rr = auth_mgr->db().create_user("admin",res->encoded); rr)
-                    {
-                        LOG_INFO("Admin user created on first startup, ret = {}, password hash = {}", rr, res->encoded);
-                    }
-                }
-            }
         }
         else
         {
@@ -154,13 +138,9 @@ net::awaitable<void> Server::do_accept()
         
         mts.connections_accepted++;
         std::string id = std::format("{}",sock);
-        LOG_DEBUG("do_accept: accepted {}, creating connection", id);
         auto conn = std::make_shared<Connection>(std::move(sock), this, id, cfg, io_ctx);
-        LOG_DEBUG("do_accept: connection created, inserting");
         connections.insert(id, conn);
-        LOG_DEBUG("do_accept: about to call start()");
         conn->start();
-        LOG_DEBUG("do_accept: start() returned");
     }
 }
 
@@ -169,8 +149,6 @@ void Server::remove_connection(std::string_view id)
     auto conn = connections.find(id);
     if (conn) 
     {
-        conn->mark_pipe_dead();
-        std::weak_ptr<Connection> wp(conn);
         connections.erase(id);
         mts.connections_closed++;
     }
@@ -178,11 +156,8 @@ void Server::remove_connection(std::string_view id)
 
 void Server::broadcast(const Msg& m, std::string_view exclude_id)
 {
-    
-    
     for (auto& conn : connections.snapshot() | std::views::filter([this, exclude_id](auto&& x){
         return x && 
-            !x->is_pipe_dead() && 
             x->get_id() != exclude_id && 
             x->is_authenticated();
         })) //Lifetime extension?  
@@ -200,7 +175,7 @@ void Server::kick_connection(std::string_view conn_id, std::string_view reason)
         return;
     }
     
-    std::ignore = conn->send_error(reason, Connection::CloseMode::CancelOthers, true);
+    conn->error_and_close(reason);
 }
 
 void Server::register_user_session(std::string_view username, std::string_view conn_id)
@@ -227,4 +202,9 @@ void Server::unregister_user_session(std::string_view username, std::string_view
     }
     
     std::ignore = auth_mgr->db().clear_conn_id_if_matches(username, conn_id);
+}
+
+bool Server::validate_conn(std::string_view username, std::string_view conn_id)
+{
+    return auth().db().get_current_conn(username).value_or("") == conn_id;
 }
