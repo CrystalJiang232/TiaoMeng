@@ -33,6 +33,7 @@
 #include "threadpool/threadpool.hpp"
 #include "config.hpp"
 #include "auth/auth_manager.hpp"
+#include "iocore/context_pool.hpp"
 
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
@@ -75,9 +76,16 @@ private:
 class Server
 {
 public:
-    Server(net::io_context& io, const Config& config);
+    explicit Server(const Config& config);
     ~Server();
-    void start();
+    
+    Server(const Server&) = delete;
+    Server& operator=(const Server&) = delete;
+    
+    [[nodiscard]] bool start();
+    void stop();
+    [[nodiscard]] bool is_running() const;
+    
     void remove_connection(std::string_view id);
     void broadcast(const Msg& msg, std::string_view exclude_id = "");
 
@@ -100,20 +108,19 @@ public:
     void unregister_user_session(std::string_view username, std::string_view conn_id);
 
 private:
-    net::awaitable<void> do_accept();
     void setup_signal_handlers();
-    void on_signal(int signal);
-    [[nodiscard]] static size_t calc_cpu_threads(const Config::ServerCfg& srv);
+    void create_connection(tcp::socket sock, size_t core_id, net::io_context& io);
     
-    net::io_context& io_ctx;
-    tcp::acceptor acceptor;
-    net::signal_set signals;
-    net::signal_set metrics_signals;
-    ConnectionsMap connections;
     const Config& cfg;
     ServerMetrics mts;
     ThreadPool tp;
     std::optional<auth::AuthManager> auth_mgr;
+    ConnectionsMap connections;
+    std::unique_ptr<iocore::ContextPool> io_pool;
+    std::atomic<bool> running{false};
+    
+    std::optional<net::signal_set> signals;
+    std::optional<net::signal_set> metrics_signals;
 };
 
 class Connection : public std::enable_shared_from_this<Connection>

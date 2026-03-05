@@ -13,11 +13,11 @@
 int main(int argc, char** argv)
 {
     CLI::App a;
-
+    
     a.add_option("port");
-
-    CLI11_PARSE(a,argc,argv);
-
+    
+    CLI11_PARSE(a, argc, argv);
+    
     std::optional<uint16_t> cli_port;
     if (argc > 1)
     {
@@ -29,7 +29,7 @@ int main(int argc, char** argv)
     }
     
     auto config = Config::load_or_defaults("server_config.json", cli_port);
-
+    
     auto log_cfg = config.logging();
     if (auto result = Logger::init(log_cfg.level, log_cfg.file, log_cfg.max_size_mb, log_cfg.enable_console);
         !result)
@@ -37,29 +37,24 @@ int main(int argc, char** argv)
         std::println(stderr, "Failed to initialize logger: {}", result.error());
         return 1;
     }
-
+    
     try
     {
-        net::io_context ic;
-        Server svr(ic, config);
-
-        LOG_INFO("Server starting on {}:{}", config.server().bind_address, config.server().port);
+        Server svr(config);
         
-        svr.start();
-        //Thread-per-core structure: permenant-running stuffs
-        // Consider using other platform-specific approaches to completely surpress context switch overhead  
-        size_t io_thread_count = config.server().io_threads;
-        std::vector<std::jthread> threads;
-        threads.reserve(io_thread_count - 1);
-        
-        for (size_t i = 1; i < io_thread_count; ++i)
+        if (!svr.start())
         {
-            threads.emplace_back([&ic] { ic.run(); });
+            LOG_ERROR("Failed to start server");
+            return 1;
         }
         
-        LOG_INFO("I/O threads: {}, CPU pool threads: {}", io_thread_count, svr.cpu_pool().size());
+        LOG_INFO("Server running. Press Ctrl+C to stop.");
         
-        ic.run();
+        // Wait for shutdown
+        while (svr.is_running())
+        {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
     catch (const std::exception& e)
     {
@@ -67,7 +62,7 @@ int main(int argc, char** argv)
         Logger::shutdown();
         return 1;
     }
-
+    
     LOG_INFO("Server exiting...");
     Logger::shutdown();
     return 0;

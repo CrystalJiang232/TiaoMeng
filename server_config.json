@@ -4,8 +4,8 @@
     "bind_address": "0.0.0.0",
     "max_connections": 1000,
     "max_message_size": 1048576,
-    "io_threads": 4,
-    "cpu_threads": 16
+    "io_threads": 2,
+    "cpu_threads": 18
   },
   "security": {
     "max_failures_before_disconnect": 5,

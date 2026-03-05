@@ -20,6 +20,7 @@ target_link_libraries(server
     fundamentals
     logger
     threadpool
+    iocore
     auth
 )
 

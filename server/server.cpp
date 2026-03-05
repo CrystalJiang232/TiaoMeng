@@ -8,6 +8,24 @@
 #include <shared_mutex>
 #include <csignal>
 
+static size_t calc_cpu_threads(const Config::ServerCfg& srv)
+{
+    if (srv.cpu_threads != 0)
+    {
+        return srv.cpu_threads;
+    }
+    
+    size_t hw = std::thread::hardware_concurrency();
+    size_t io = srv.io_threads;
+    
+    if (hw <= io)
+    {
+        return 2;
+    }
+    
+    return std::max(2uz, hw - io);
+}
+
 void ConnectionsMap::insert(std::string id, std::shared_ptr<Connection> conn)
 {
     std::unique_lock lock(mtx);
@@ -40,16 +58,13 @@ size_t ConnectionsMap::size() const
 }
 
 
-Server::Server(net::io_context& io, const Config& config)
-    : io_ctx(io)
-    , acceptor(io, tcp::endpoint(net::ip::make_address(config.server().bind_address), config.server().port))
-    , signals(io, SIGINT, SIGTERM)
-    , metrics_signals(io, SIGUSR1)
-    , cfg(config)
+Server::Server(const Config& config)
+    : cfg(config)
     , tp(calc_cpu_threads(config.server()))
+    , running(false)
 {
     LOG_INFO("ThreadPool initialized with {} threads", tp.size());
-    acceptor.set_option(net::socket_base::reuse_address(true));
+    
     auto auth_result = auth::AuthManager::create("auth.db", tp);
     if (auth_result)
     {
@@ -69,79 +84,95 @@ Server::Server(net::io_context& io, const Config& config)
     }
 }
 
-size_t Server::calc_cpu_threads(const Config::ServerCfg& srv)
-{
-    if (srv.cpu_threads != 0)
-    {
-        return srv.cpu_threads;
-    }
-    
-    size_t hw = std::thread::hardware_concurrency();
-    size_t io = srv.io_threads;
-    
-    if (hw <= io)
-    {
-        return 2;
-    }
-    
-    return std::max(2uz, hw - io);
-}
-
 Server::~Server()
 {
+    stop();
     tp.stop();
 }
 
-void Server::start()
+bool Server::start()
 {
-    net::co_spawn(io_ctx, do_accept(), net::detached);
+    if (running)
+    {
+        return false;
+    }
     
-    // Setup shutdown signals
-    signals.async_wait([this](auto, auto sig)
+    // Create io_pool
+    io_pool = std::make_unique<iocore::ContextPool>(
+        cfg.server().io_threads,
+        cfg.server().port,
+        [this](tcp::socket sock, size_t core_id, net::io_context& io)
+        {
+            create_connection(std::move(sock), core_id, io);
+        }
+    );
+    
+    auto result = io_pool->start();
+    if (!result)
+    {
+        LOG_ERROR("Failed to start io_pool");
+        return false;
+    }
+    
+    running = true;
+    
+    // Setup shutdown signals on first io_context
+    auto& io = io_pool->get_context(0);
+    signals.emplace(io, SIGINT, SIGTERM);
+    signals->async_wait([this](auto, auto sig)
     {
         LOG_WARN("Received signal {}, shutting down...", sig);
         LOG_INFO("{}", mts);
-        io_ctx.stop();
+        stop();
     });
     
-    // Setup metrics signal (SIGUSR1)
-    metrics_signals.async_wait([this](boost::system::error_code ec, int sig)
+    // Setup metrics signal
+    metrics_signals.emplace(io, SIGUSR1);
+    metrics_signals->async_wait([this](boost::system::error_code ec, int sig)
     {
         if (!ec && sig == SIGUSR1)
         {
-            LOG_INFO("{}",mts);
-            // Re-register for next signal
-            metrics_signals.async_wait([this](boost::system::error_code ec2, int sig2)
+            LOG_INFO("{}", mts);
+            metrics_signals->async_wait([this](boost::system::error_code ec2, int sig2)
             {
                 if (!ec2 && sig2 == SIGUSR1)
                 {
-                    LOG_INFO("{}",mts);
+                    LOG_INFO("{}", mts);
                 }
             });
         }
     });
+    
+    LOG_INFO("Server started on {}:{} with {} I/O cores", 
+             cfg.server().bind_address, cfg.server().port, io_pool->core_count());
+    return true;
 }
 
-net::awaitable<void> Server::do_accept()
+void Server::stop()
 {
-    LOG_DEBUG("do_accept: starting loop");
-    while (true)
+    if (!running)
     {
-        auto [ec, sock] = co_await acceptor.async_accept(net::as_tuple(net::use_awaitable));
-        
-        if (ec)
-        {
-            LOG_ERROR("Accept error: {}", ec.message());
-            mts.errors++;
-            continue;
-        }
-        
-        mts.connections_accepted++;
-        std::string id = std::format("{}",sock);
-        auto conn = std::make_shared<Connection>(std::move(sock), this, id, cfg, io_ctx);
-        connections.insert(id, conn);
-        conn->start();
+        return;
     }
+    
+    io_pool->stop();
+    running = false;
+    LOG_INFO("Server stopped");
+}
+
+bool Server::is_running() const
+{
+    return running;
+}
+
+void Server::create_connection(tcp::socket sock, size_t core_id, net::io_context& io)
+{
+    (void)core_id;
+    mts.connections_accepted++;
+    std::string id = std::format("{}", sock);
+    auto conn = std::make_shared<Connection>(std::move(sock), this, id, cfg, io);
+    connections.insert(std::string(conn->get_id()), conn);
+    conn->start();
 }
 
 void Server::remove_connection(std::string_view id)
@@ -160,11 +191,15 @@ void Server::broadcast(const Msg& m, std::string_view exclude_id)
         return x && 
             x->get_id() != exclude_id && 
             x->is_authenticated();
-        })) //Lifetime extension?  
+        }))
     {
-        
         conn->send_encrypted(m);
     }
+}
+
+bool Server::validate_conn(std::string_view username, std::string_view conn_id)
+{
+    return auth().db().get_current_conn(username).value_or("") == conn_id;
 }
 
 void Server::kick_connection(std::string_view conn_id, std::string_view reason)
@@ -175,7 +210,7 @@ void Server::kick_connection(std::string_view conn_id, std::string_view reason)
         return;
     }
     
-    conn->error_and_close(reason);
+    std::ignore = conn->send_error(reason, Connection::CloseMode::Immediate, true);
 }
 
 void Server::register_user_session(std::string_view username, std::string_view conn_id)
@@ -202,9 +237,4 @@ void Server::unregister_user_session(std::string_view username, std::string_view
     }
     
     std::ignore = auth_mgr->db().clear_conn_id_if_matches(username, conn_id);
-}
-
-bool Server::validate_conn(std::string_view username, std::string_view conn_id)
-{
-    return auth().db().get_current_conn(username).value_or("") == conn_id;
 }
