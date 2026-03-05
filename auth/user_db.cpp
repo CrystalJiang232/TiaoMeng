@@ -331,4 +331,21 @@ bool UserDB::update_password(std::string_view username, std::string_view passwor
     return rc == SQLITE_DONE && sqlite3_changes(db) > 0;
 }
 
+bool UserDB::delete_user(std::string_view username)
+{
+    const char* sql = "DELETE FROM users WHERE username = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        return false;
+    }
+    
+    sqlite3_bind_text(stmt, 1, username.data(), static_cast<int>(username.size()), SQLITE_STATIC);
+    
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE && sqlite3_changes(db) > 0;
+}
+
 }

@@ -38,6 +38,7 @@ public:
     [[nodiscard]] std::vector<UserRecord> list_users();
     [[nodiscard]] bool activate_user(std::string_view username);
     [[nodiscard]] bool update_password(std::string_view username, std::string_view password_hash);
+    [[nodiscard]] bool delete_user(std::string_view username);
 
 private:
     explicit UserDB(sqlite3* db);

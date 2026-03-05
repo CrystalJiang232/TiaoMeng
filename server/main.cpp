@@ -1,6 +1,7 @@
 #include "server.hpp"
 #include "config.hpp"
 #include "logger/logger.hpp"
+#include "extern/CLI11/CLI11.hpp"
 
 #include <print>
 #include <cstring>
@@ -11,6 +12,12 @@
 
 int main(int argc, char** argv)
 {
+    CLI::App a;
+
+    a.add_option("port");
+
+    CLI11_PARSE(a,argc,argv);
+
     std::optional<uint16_t> cli_port;
     if (argc > 1)
     {

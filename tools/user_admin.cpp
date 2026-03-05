@@ -18,6 +18,7 @@ void print_usage(const char* prog)
     std::println("  enable <username>            Reactivate user");
     std::println("  reset <username> <password>  Reset password");
     std::println("  kick <username>              Clear current connection");
+    std::println("  remove <username>            Permanently delete user");
 }
 
 int cmd_add(auth::AuthManager& auth, std::string_view user, std::string_view pass)
@@ -121,6 +122,18 @@ int cmd_kick(auth::UserDB& db, std::string_view user)
     return 1;
 }
 
+int cmd_remove(auth::UserDB& db, std::string_view user)
+{
+    if (db.delete_user(user))
+    {
+        std::println("User '{}' permanently removed", user);
+        return 0;
+    }
+    
+    std::println(stderr, "Failed to remove user (not found or database error)");
+    return 1;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 2)
@@ -166,6 +179,10 @@ int main(int argc, char** argv)
     else if (cmd == "kick" && argc == 3)
     {
         return cmd_kick(db, argv[2]);
+    }
+    else if (cmd == "remove" && argc == 3)
+    {
+        return cmd_remove(db, argv[2]);
     }
     else
     {

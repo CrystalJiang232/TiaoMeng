@@ -171,7 +171,6 @@ public:
     void send_raw_error(std::string_view err, CloseMode mode = CloseMode::Graceful);
     [[nodiscard("Do not discard send_error's value: caller is responsible for co_return upon this function returning true to prevent connection leakage. Use std::ignore or void cast for explicit schematics.")]]
     bool send_error(std::string_view err, CloseMode mode = CloseMode::Graceful, bool force_close = false);
-    void reset_session_timer();
     void error_and_close(std::string_view err_text);
 
 private:
@@ -188,13 +187,6 @@ private:
     
     net::awaitable<std::optional<IoResult>> read_with_timeout(net::mutable_buffer buf, std::chrono::seconds timeout);
     net::awaitable<std::optional<IoResult>> write_with_timeout(const Msg& msg, std::chrono::seconds timeout);
-    void on_global_timeout();
-    void reset_global_timer(std::chrono::seconds duration);
-    void cancel_global_timer();
-    
-    
-    void cancel_all_io();
-    void clear_write_queue();
     
     net::awaitable<void> handle_handshake(const Msg& msg);
     net::awaitable<void> handle_encrypted(const Msg& msg);
@@ -223,7 +215,6 @@ private:
     std::atomic<bool> write_in_progress{false};
     FailureTracker fail_tracker;
     const Config& cfg;
-    net::steady_timer global_timer;
     std::string auth_user;
 
     friend class EventHandler;

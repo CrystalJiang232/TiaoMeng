@@ -26,17 +26,12 @@ Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const
     , write_in_progress(false)
     , fail_tracker(config.security().max_failures_before_disconnect)
     , cfg(config)
-    , global_timer(strand)
 {
     LOG_INFO("Connection established with id = {}", id);
-    LOG_DEBUG("Connection {}: about to set global timer", id);
-    reset_global_timer(cfg.timeouts().handshake_timeout);
-    LOG_DEBUG("Connection {}: global timer set complete", id);
 }
 
 Connection::~Connection() noexcept
 {
-    cancel_global_timer();
     if (ss_local)
     {
         secure_clear(*ss_local);
@@ -68,71 +63,6 @@ void Connection::start()
         },
         net::detached);
     LOG_DEBUG("Connection {} start() co_spawn returned", id);
-}
-
-void Connection::reset_global_timer(std::chrono::seconds duration)
-{
-    LOG_DEBUG("Connection {}: reset_global_timer {}s", id, duration.count());
-    global_timer.expires_after(duration);
-    LOG_DEBUG("Connection {}: timer expiry set", id);
-    /*
-    global_timer.async_wait(
-        net::bind_executor(strand, [self = shared_from_this()](boost::system::error_code ec)
-        {
-            if (!ec)
-            {
-                self->on_global_timeout();
-            }
-        }));
-        */
-    
-    LOG_DEBUG("Connection {}: async_wait initiated", id);
-}
-
-void Connection::cancel_global_timer()
-{
-    global_timer.cancel();
-}
-
-void Connection::on_global_timeout()
-{
-    if (server) server->metrics().timeouts++;
-    auto st = state.load(std::memory_order_acquire);
-
-    switch (st)
-    {
-    case ConnState::Connected:
-        [[fallthrough]];
-    case ConnState::Handshaking:
-        if(server)
-        {
-            server->metrics().handshakes_failed++;
-            send_raw_error("Handshake timeout");
-        }
-        break;
-
-    case ConnState::Established:
-        [[fallthrough]];
-    case ConnState::Authenticated:
-        if(server)
-        {
-            server->metrics().timeouts++;
-            std::ignore = send_error("Session timeout", CloseMode::Graceful, true);
-        }
-        break;
-
-    case ConnState::Closing:
-        break;
-    }
-}
-
-void Connection::reset_session_timer()
-{
-    auto st = state.load(std::memory_order_acquire);
-    if (st == ConnState::Established || st == ConnState::Authenticated)
-    {
-        reset_global_timer(cfg.security().session_timeout);
-    }
 }
 
 net::awaitable<std::optional<Connection::IoResult>> Connection::read_with_timeout(
@@ -504,7 +434,6 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         client_pk.reset();
         
         state.store(ConnState::Established, std::memory_order_release);
-        reset_global_timer(cfg.security().session_timeout);
         LOG_INFO("Secure session established with {}", id);
         if (server) 
         {
@@ -751,16 +680,6 @@ net::awaitable<void> Connection::write()
     }
 }
 
-void Connection::cancel_all_io()
-{
-    boost::system::error_code ec;
-    socket.cancel(ec);
-}
-
-void Connection::clear_write_queue()
-{
-    write_queue.clear();
-}
 
 void Connection::shutdown() noexcept
 {
