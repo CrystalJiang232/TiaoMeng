@@ -45,9 +45,8 @@ net::awaitable<AuthManager::AuthResult> AuthManager::verify(
         co_return AuthResult{false, false};
     }
     
-    bool verified = cpu_pool.get().submit([&]() -> bool {
-        return Argon2Hasher::verify(password, rec.password_hash);
-    }).value_or(false);
+    // Run Argon2 verification directly (CPU-intensive)
+    bool verified = Argon2Hasher::verify(password, rec.password_hash);
     
     if (!verified)
     {

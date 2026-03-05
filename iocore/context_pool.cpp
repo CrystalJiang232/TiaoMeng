@@ -104,6 +104,7 @@ public:
     
     net::awaitable<void> do_accept(CoreContext* core)
     {
+        size_t accept_count = 0;
         while (true)
         {
             auto [ec, sock] = co_await core->acc.async_accept(net::as_tuple(net::use_awaitable));
@@ -111,14 +112,18 @@ public:
             {
                 if (ec == net::error::operation_aborted)
                 {
+                    LOG_INFO("[ACCEPT] Core {} shutting down, accepted {} total", core->core_id, accept_count);
                     co_return;
                 }
-                LOG_WARN("Accept error on core {}: {}", core->core_id, ec.message());
+                LOG_WARN("[ACCEPT] Core {} error: {}", core->core_id, ec.message());
                 continue;
             }
             
+            accept_count++;
             auto ep = sock.remote_endpoint();
-            LOG_DEBUG("Core {} accepted connection from {}:{}", core->core_id, ep.address().to_string(), ep.port());
+            LOG_DEBUG("[ACCEPT] Core {} accept #{:4} from {}:{}", 
+                      core->core_id, accept_count, 
+                      ep.address().to_string(), ep.port());
             factory(std::move(sock), core->core_id, core->io);
         }
     }

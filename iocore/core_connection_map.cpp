@@ -9,7 +9,7 @@ namespace iocore
 void CoreConnectionMap::insert(size_t core_id, std::shared_ptr<CoreConnection> conn)
 {
     (void)core_id;
-    std::unique_lock lock(mtx);
+    std::shared_lock lock(mtx);
     conns.insert_or_assign(std::string(conn->get_id()), conn);
 }
 
