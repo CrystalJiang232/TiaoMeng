@@ -126,22 +126,16 @@ bool Server::start()
         stop();
     });
     
-    // Setup metrics signal
     metrics_signals.emplace(io, SIGUSR1);
-    metrics_signals->async_wait([this](boost::system::error_code ec, int sig)
+    std::function<void(boost::system::error_code, int)> metrics_handler = [this, &metrics_handler](boost::system::error_code ec, int sig)
     {
         if (!ec && sig == SIGUSR1)
         {
             LOG_INFO("{}", mts);
-            metrics_signals->async_wait([this](boost::system::error_code ec2, int sig2)
-            {
-                if (!ec2 && sig2 == SIGUSR1)
-                {
-                    LOG_INFO("{}", mts);
-                }
-            });
         }
-    });
+        metrics_signals->async_wait(metrics_handler);
+    };
+    metrics_signals->async_wait(metrics_handler);
     
     LOG_INFO("Server started on {}:{} with {} I/O cores", 
              cfg.server().bind_address, cfg.server().port, io_pool->core_count());

@@ -65,12 +65,21 @@ add_subdirectory(client)
 add_subdirectory(tools)
 
 if(MSG_SVR_BUILD_MODE STREQUAL "TEST")
-    include(FetchContent)
-    FetchContent_Declare(
-        Catch2
-        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-        GIT_TAG v3.5.2
-    )
-    FetchContent_MakeAvailable(Catch2)
+
+    find_package(Catch2 3.0 QUIET)
+    if(NOT Catch2_FOUND)
+        include(FetchContent)
+        FetchContent_Declare(
+            Catch2
+            GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+            GIT_TAG v3.5.2
+            GIT_SHALLOW TRUE
+            TIMEOUT 30
+        )
+        FetchContent_MakeAvailable(Catch2)
+    else()
+        message(STATUS "Using system Catch2")
+    endif()
+    
     add_subdirectory(tests)
 endif()

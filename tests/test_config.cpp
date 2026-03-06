@@ -7,7 +7,7 @@
 
 namespace fs = std::filesystem;
 
-TEST_CASE("Config::load_defaults returns valid config with defaults")
+TEST_CASE("Config::load_defaults returns valid configuration with default values")
 {
     auto cfg = Config::load_defaults();
     
@@ -20,37 +20,38 @@ TEST_CASE("Config::load_defaults returns valid config with defaults")
     CHECK(cfg.logging().enable_console == true);
 }
 
-TEST_CASE("Config::load parses valid JSON file")
+TEST_CASE("Config::load parses valid JSON configuration file")
 {
     const char* test_file = "/tmp/test_config_valid.json";
     
-    std::ofstream f(test_file);
-    f << R"({
-        "server": {
-            "port": 7777,
-            "bind_address": "127.0.0.1",
-            "max_connections": 500,
-            "max_message_size": 2048
-        },
-        "security": {
-            "max_failures_before_disconnect": 3,
-            "session_timeout_sec": 1800,
-            "key_rotation_interval_sec": 43200,
-            "require_client_auth": true
-        },
-        "timeouts": {
-            "handshake_timeout_sec": 15,
-            "read_timeout_sec": 60,
-            "write_timeout_sec": 10
-        },
-        "logging": {
-            "level": "debug",
-            "file": "/var/log/test.log",
-            "max_size_mb": 50,
-            "enable_console": false
-        }
-    })";
-    f.close();
+    {
+        std::ofstream f(test_file);
+        f << R"({
+            "server": {
+                "port": 7777,
+                "bind_address": "127.0.0.1",
+                "max_connections": 500,
+                "max_message_size": 2048
+            },
+            "security": {
+                "max_failures_before_disconnect": 3,
+                "session_timeout_sec": 1800,
+                "key_rotation_interval_sec": 43200,
+                "require_client_auth": true
+            },
+            "timeouts": {
+                "handshake_timeout_sec": 15,
+                "read_timeout_sec": 60,
+                "write_timeout_sec": 10
+            },
+            "logging": {
+                "level": "debug",
+                "file": "/var/log/test.log",
+                "max_size_mb": 50,
+                "enable_console": false
+            }
+        })";
+    }
     
     auto result = Config::load(test_file);
     
@@ -68,58 +69,74 @@ TEST_CASE("Config::load parses valid JSON file")
     fs::remove(test_file);
 }
 
-TEST_CASE("Config::load returns error for missing file")
+TEST_CASE("Config::load returns error for missing configuration file")
 {
     auto result = Config::load("/nonexistent/path/config.json");
     
     REQUIRE(!result.has_value());
 }
 
-TEST_CASE("Config::load returns error for invalid JSON")
+TEST_CASE("Config::load returns error for invalid JSON syntax")
 {
     const char* test_file = "/tmp/test_config_invalid.json";
     
-    std::ofstream f(test_file);
-    f << "{ invalid json }";
-    f.close();
+    {
+        std::ofstream f(test_file);
+        f << "{ invalid json }";
+    }
     
     auto result = Config::load(test_file);
     
     REQUIRE(!result.has_value());
-    
     fs::remove(test_file);
 }
 
-TEST_CASE("Config::load returns error for port out of range")
+TEST_CASE("Config::load returns error for port number out of valid range")
 {
     const char* test_file = "/tmp/test_config_bad_port.json";
     
-    std::ofstream f(test_file);
-    f << R"({"server": {"port": 99999}})";
-    f.close();
+    {
+        std::ofstream f(test_file);
+        f << R"({"server": {"port": 99999}})";
+    }
     
     auto result = Config::load(test_file);
     
     REQUIRE(!result.has_value());
-    
     fs::remove(test_file);
 }
 
-TEST_CASE("Config::load_or_defaults uses defaults when file missing")
+TEST_CASE("Config::load returns error for negative timeout values")
 {
-    auto cfg = Config::load_or_defaults("/nonexistent/config.json");
+    const char* test_file = "/tmp/test_config_negative_timeout.json";
+    
+    {
+        std::ofstream f(test_file);
+        f << R"({"timeouts": {"read_timeout_sec": -10}})";
+    }
+    
+    auto result = Config::load(test_file);
+    
+    REQUIRE(!result.has_value());
+    fs::remove(test_file);
+}
+
+TEST_CASE("Config::load_or_defaults uses default values when configuration file is missing")
+{
+    auto cfg = Config::load_or_defaults("/nonexistent/config.json", std::nullopt);
     
     CHECK(cfg.server().port == 8080);
     CHECK(cfg.logging().level == "info");
 }
 
-TEST_CASE("Config::load applies defaults for missing sections")
+TEST_CASE("Config::load applies default values for missing configuration sections")
 {
     const char* test_file = "/tmp/test_config_partial.json";
     
-    std::ofstream f(test_file);
-    f << R"({"server": {"port": 6000}})";
-    f.close();
+    {
+        std::ofstream f(test_file);
+        f << R"({"server": {"port": 6000}})";
+    }
     
     auto result = Config::load(test_file);
     
@@ -132,13 +149,14 @@ TEST_CASE("Config::load applies defaults for missing sections")
     fs::remove(test_file);
 }
 
-TEST_CASE("Config::load handles empty JSON object")
+TEST_CASE("Config::load handles empty JSON object with all defaults")
 {
     const char* test_file = "/tmp/test_config_empty.json";
     
-    std::ofstream f(test_file);
-    f << "{}";
-    f.close();
+    {
+        std::ofstream f(test_file);
+        f << "{}";
+    }
     
     auto result = Config::load(test_file);
     
@@ -146,5 +164,36 @@ TEST_CASE("Config::load handles empty JSON object")
     CHECK(result->server().port == 8080);
     CHECK(result->security().max_failures_before_disconnect == 5);
     
+    fs::remove(test_file);
+}
+
+TEST_CASE("Config::load_or_defaults CLI port parameter overrides file configuration")
+{
+    const char* test_file = "/tmp/test_config_cli_override.json";
+    
+    {
+        std::ofstream f(test_file);
+        f << R"({"server": {"port": 9000}})";
+    }
+    
+    auto cfg = Config::load_or_defaults(test_file, static_cast<uint16_t>(7777));
+    
+    CHECK(cfg.server().port == 7777);
+    
+    fs::remove(test_file);
+}
+
+TEST_CASE("Config::load validates io_threads does not exceed hardware limits")
+{
+    const char* test_file = "/tmp/test_config_io_threads.json";
+    
+    {
+        std::ofstream f(test_file);
+        f << R"({"server": {"io_threads": 256}})";
+    }
+    
+    auto result = Config::load(test_file);
+    
+    REQUIRE(!result.has_value());
     fs::remove(test_file);
 }

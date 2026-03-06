@@ -249,7 +249,6 @@ Load tested: 300+ concurrent connections, 100% handshake/auth success, ~10 req/s
 
 ## TODO / Planned Features
 
-- [ ] **Stable Session Timer**: Global per-connection timer for session lifetime management (currently disabled due to async_wait blocking issue)
 - [ ] **Session Key Rotation**: Rekeying state implementation for long-lived connections
 - [x] **Connection Pooling**: Optimized broadcast delivery with connection reuse
 - [ ] **Prometheus Metrics**: Export metrics in Prometheus format for monitoring

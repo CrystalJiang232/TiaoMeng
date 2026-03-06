@@ -165,7 +165,11 @@ net::awaitable<void> Connection::read_header()
             e == net::error::connection_reset ||
             e == net::error::broken_pipe)
         {
+            // Pipe broken, disconnect immediately
+            close(CloseMode::Immediate);
+            co_return;
         }
+        //Otherwise still attempt to relay some error messages with Graceful shutdown
         error_and_close("Read header error");
         co_return;
     }

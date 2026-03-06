@@ -108,7 +108,6 @@ public:
     void unregister_user_session(std::string_view username, std::string_view conn_id);
 
 private:
-    void setup_signal_handlers();
     void create_connection(tcp::socket sock, size_t core_id, net::io_context& io);
     
     const Config& cfg;
