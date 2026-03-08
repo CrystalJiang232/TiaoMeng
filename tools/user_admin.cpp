@@ -12,6 +12,7 @@ void print_usage(const char* prog)
 {
     std::println("Usage: {} <command> [args]", prog);
     std::println("Commands:");
+    std::println("  init [admin_user] [password] Initialize DB, optionally create admin");
     std::println("  add <username> <password>    Create new user");
     std::println("  list                         List all users");
     std::println("  disable <username>           Deactivate user");
@@ -19,6 +20,41 @@ void print_usage(const char* prog)
     std::println("  reset <username> <password>  Reset password");
     std::println("  kick <username>              Clear current connection");
     std::println("  remove <username>            Permanently delete user");
+}
+
+int cmd_init(auth::AuthManager& auth, auth::UserDB& db, int argc, char** argv)
+{
+    std::println("Database initialized successfully");
+    
+    if (argc >= 4)
+    {
+        std::string_view admin_user = argv[2];
+        std::string_view admin_pass = argv[3];
+        
+        auto users = db.list_users();
+        if (!users.empty())
+        {
+            std::println(stderr, "Users already exist, skipping admin creation");
+            return 0;
+        }
+        
+        if (!auth::check_password(admin_pass))
+        {
+            std::println(stderr, "Admin password too short (min 8 chars)");
+            return 1;
+        }
+        
+        if (auth.register_user(admin_user, admin_pass))
+        {
+            std::println("Admin user '{}' created", admin_user);
+            return 0;
+        }
+        
+        std::println(stderr, "Failed to create admin user");
+        return 1;
+    }
+    
+    return 0;
 }
 
 int cmd_add(auth::AuthManager& auth, std::string_view user, std::string_view pass)
@@ -156,7 +192,11 @@ int main(int argc, char** argv)
     auto& auth = *auth_res;
     auto& db = auth.db();
     
-    if (cmd == "add" && argc == 4)
+    if (cmd == "init")
+    {
+        return cmd_init(auth, db, argc, argv);
+    }
+    else if (cmd == "add" && argc == 4)
     {
         return cmd_add(auth, argv[2], argv[3]);
     }

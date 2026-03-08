@@ -16,6 +16,11 @@ std::expected<AuthManager, std::string> AuthManager::create(
         return std::unexpected(db_result.error());
     }
     
+    if (!db_result->init_schema())
+    {
+        return std::unexpected("Failed to initialize database schema");
+    }
+    
     return AuthManager(std::move(*db_result), tp);
 }
 

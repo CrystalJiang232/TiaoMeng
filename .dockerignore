@@ -1,0 +1,16 @@
+**/*
+
+!docker-entrypoint.sh
+!server
+!crypto
+!auth
+!fundamentals
+!server
+!threadpool
+!tools
+!docker_lib
+!CMakeLists.txt
+!logger
+!iocore
+!client
+!include
