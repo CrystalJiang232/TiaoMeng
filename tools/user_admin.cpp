@@ -1,232 +1,214 @@
-#include "auth/auth_manager.hpp"
-#include "auth/user_db.hpp"
-#include "auth/argon2_hasher.hpp"
-#include "threadpool/threadpool.hpp"
+#include "tools/user_admin.hpp"
+#include "extern/CLI11/CLI11.hpp"
 
+#include <expected>
+#include <filesystem>
 #include <print>
 #include <string>
-#include <vector>
-#include <cstring>
-
-void print_usage(const char* prog)
-{
-    std::println("Usage: {} <command> [args]", prog);
-    std::println("Commands:");
-    std::println("  init [admin_user] [password] Initialize DB, optionally create admin");
-    std::println("  add <username> <password>    Create new user");
-    std::println("  list                         List all users");
-    std::println("  disable <username>           Deactivate user");
-    std::println("  enable <username>            Reactivate user");
-    std::println("  reset <username> <password>  Reset password");
-    std::println("  kick <username>              Clear current connection");
-    std::println("  remove <username>            Permanently delete user");
-}
-
-int cmd_init(auth::AuthManager& auth, auth::UserDB& db, int argc, char** argv)
-{
-    std::println("Database initialized successfully");
-    
-    if (argc >= 4)
-    {
-        std::string_view admin_user = argv[2];
-        std::string_view admin_pass = argv[3];
-        
-        auto users = db.list_users();
-        if (!users.empty())
-        {
-            std::println(stderr, "Users already exist, skipping admin creation");
-            return 0;
-        }
-        
-        if (!auth::check_password(admin_pass))
-        {
-            std::println(stderr, "Admin password too short (min 8 chars)");
-            return 1;
-        }
-        
-        if (auth.register_user(admin_user, admin_pass))
-        {
-            std::println("Admin user '{}' created", admin_user);
-            return 0;
-        }
-        
-        std::println(stderr, "Failed to create admin user");
-        return 1;
-    }
-    
-    return 0;
-}
-
-int cmd_add(auth::AuthManager& auth, std::string_view user, std::string_view pass)
-{
-    if (!auth::check_password(pass))
-    {
-        std::println(stderr, "Password too short (min 8 chars)");
-        return 1;
-    }
-    
-    if (auth.register_user(user, pass))
-    {
-        std::println("User '{}' created", user);
-        return 0;
-    }
-    
-    std::println(stderr, "Failed to create user (may already exist)");
-    return 1;
-}
-
-int cmd_list(auth::UserDB& db)
-{
-    auto users = db.list_users();
-    if (users.empty())
-    {
-        std::println("No users found");
-        return 0;
-    }
-    
-    std::println("{:<20} {:<10} {}", "Username", "Status", "Last Login");
-    std::println("{}", std::string(50, '-'));
-    
-    for (const auto& u : users)
-    {
-        auto status = u.active ? "active" : "disabled";
-        auto last = u.last_login == 0 ? "never" : std::to_string(u.last_login);
-        std::println("{:<20} {:<10} {}", u.username, status, last);
-    }
-    
-    return 0;
-}
-
-int cmd_disable(auth::UserDB& db, std::string_view user)
-{
-    if (db.deactivate_user(user))
-    {
-        std::println("User '{}' disabled", user);
-        return 0;
-    }
-    
-    std::println(stderr, "Failed to disable user (not found)");
-    return 1;
-}
-
-int cmd_enable(auth::UserDB& db, std::string_view user)
-{
-    if (db.activate_user(user))
-    {
-        std::println("User '{}' enabled", user);
-        return 0;
-    }
-    
-    std::println(stderr, "Failed to enable user (not found)");
-    return 1;
-}
-
-int cmd_reset(auth::UserDB& db, std::string_view user, std::string_view pass)
-{
-    if (!auth::check_password(pass))
-    {
-        std::println(stderr, "Password too short (min 8 chars)");
-        return 1;
-    }
-    
-    auto hash_res = auth::Argon2Hasher::hash(pass);
-    if (!hash_res)
-    {
-        std::println(stderr, "Failed to hash password");
-        return 1;
-    }
-    
-    if (db.update_password(user, hash_res->encoded))
-    {
-        std::println("Password reset for '{}'", user);
-        return 0;
-    }
-    
-    std::println(stderr, "Failed to reset password (user not found)");
-    return 1;
-}
-
-int cmd_kick(auth::UserDB& db, std::string_view user)
-{
-    if (db.set_current_conn(user, ""))
-    {
-        std::println("User '{}' connection cleared", user);
-        return 0;
-    }
-    
-    std::println(stderr, "Failed to clear connection (user not found)");
-    return 1;
-}
-
-int cmd_remove(auth::UserDB& db, std::string_view user)
-{
-    if (db.delete_user(user))
-    {
-        std::println("User '{}' permanently removed", user);
-        return 0;
-    }
-    
-    std::println(stderr, "Failed to remove user (not found or database error)");
-    return 1;
-}
 
 int main(int argc, char** argv)
 {
-    if (argc < 2)
-    {
-        print_usage(argv[0]);
-        return 1;
-    }
+    CLI::App app{"TiaoMeng User Administration Tool"};
+    app.require_subcommand(1);
     
-    std::string cmd = argv[1];
+    std::string db_path = "auth.db";
+    app.add_option("-d,--database", db_path, "Database file path")
+       ->default_val("auth.db");
     
-    ThreadPool pool(1);
+    auto init_cmd = app.add_subcommand("init", "Initialize database schema");
+    std::string init_user;
+    std::string init_pass;
+    init_cmd->add_option("admin_user", init_user, "Bootstrap admin username");
+    init_cmd->add_option("admin_password", init_pass, "Bootstrap admin password");
     
-    auto auth_res = auth::AuthManager::create("auth.db", pool);
-    if (!auth_res)
+    init_cmd->callback([&]()
     {
-        std::println(stderr, "Failed to open auth.db: {}", auth_res.error());
-        return 1;
-    }
+        std::optional<std::string> u = init_user.empty() ? std::nullopt : std::optional(init_user);
+        std::optional<std::string> p = init_pass.empty() ? std::nullopt : std::optional(init_pass);
+        
+        auto res = tools::cmd_init(db_path, u, p);
+        if (!res)
+        {
+            std::println(stderr, "Error: {}", res.error());
+            std::exit(1);
+        }
+        std::println("{}", *res);
+    });
     
-    auto& auth = *auth_res;
-    auto& db = auth.db();
+    auto add_cmd = app.add_subcommand("add", "Create new user");
+    std::string add_user;
+    std::string add_pass;
+    add_cmd->add_option("username", add_user, "Username")->required();
+    add_cmd->add_option("password", add_pass, "Password")->required();
     
-    if (cmd == "init")
+    add_cmd->callback([&]()
     {
-        return cmd_init(auth, db, argc, argv);
-    }
-    else if (cmd == "add" && argc == 4)
+        ThreadPool pool(1);
+        auto auth_res = auth::AuthManager::create(db_path, pool);
+        if (!auth_res)
+        {
+            std::println(stderr, "Error: {}", auth_res.error());
+            std::exit(1);
+        }
+        
+        auto res = tools::cmd_add(*auth_res, add_user, add_pass);
+        if (!res)
+        {
+            std::println(stderr, "Error: {}", res.error());
+            std::exit(1);
+        }
+        std::println("{}", *res);
+    });
+    
+    auto list_cmd = app.add_subcommand("list", "List all users");
+    list_cmd->callback([&]()
     {
-        return cmd_add(auth, argv[2], argv[3]);
-    }
-    else if (cmd == "list")
+        ThreadPool pool(1);
+        auto auth_res = auth::AuthManager::create(db_path, pool);
+        if (!auth_res)
+        {
+            std::println(stderr, "Error: {}", auth_res.error());
+            std::exit(1);
+        }
+        
+        auto res = tools::cmd_list(auth_res->db());
+        if (!res)
+        {
+            std::println(stderr, "Error: {}", res.error());
+            std::exit(1);
+        }
+        if (!res->empty())
+        {
+            std::println("{}", *res);
+        }
+    });
+    
+    auto disable_cmd = app.add_subcommand("disable", "Deactivate user");
+    std::string disable_user;
+    disable_cmd->add_option("username", disable_user, "Username to disable")->required();
+    disable_cmd->callback([&]()
     {
-        return cmd_list(db);
-    }
-    else if (cmd == "disable" && argc == 3)
+        ThreadPool pool(1);
+        auto auth_res = auth::AuthManager::create(db_path, pool);
+        if (!auth_res)
+        {
+            std::println(stderr, "Error: {}", auth_res.error());
+            std::exit(1);
+        }
+        
+        auto res = tools::cmd_disable(auth_res->db(), disable_user);
+        if (!res)
+        {
+            std::println(stderr, "Error: {}", res.error());
+            std::exit(1);
+        }
+        std::println("{}", *res);
+    });
+    
+    auto enable_cmd = app.add_subcommand("enable", "Reactivate user");
+    std::string enable_user;
+    enable_cmd->add_option("username", enable_user, "Username to enable")->required();
+    enable_cmd->callback([&]()
     {
-        return cmd_disable(db, argv[2]);
-    }
-    else if (cmd == "enable" && argc == 3)
+        ThreadPool pool(1);
+        auto auth_res = auth::AuthManager::create(db_path, pool);
+        if (!auth_res)
+        {
+            std::println(stderr, "Error: {}", auth_res.error());
+            std::exit(1);
+        }
+        
+        auto res = tools::cmd_enable(auth_res->db(), enable_user);
+        if (!res)
+        {
+            std::println(stderr, "Error: {}", res.error());
+            std::exit(1);
+        }
+        std::println("{}", *res);
+    });
+    
+    auto reset_cmd = app.add_subcommand("reset", "Reset user password");
+    std::string reset_user;
+    std::string reset_pass;
+    reset_cmd->add_option("username", reset_user, "Username")->required();
+    reset_cmd->add_option("password", reset_pass, "New password")->required();
+    reset_cmd->callback([&]()
     {
-        return cmd_enable(db, argv[2]);
-    }
-    else if (cmd == "reset" && argc == 4)
+        ThreadPool pool(1);
+        auto auth_res = auth::AuthManager::create(db_path, pool);
+        if (!auth_res)
+        {
+            std::println(stderr, "Error: {}", auth_res.error());
+            std::exit(1);
+        }
+        
+        auto res = tools::cmd_reset(auth_res->db(), reset_user, reset_pass);
+        if (!res)
+        {
+            std::println(stderr, "Error: {}", res.error());
+            std::exit(1);
+        }
+        std::println("{}", *res);
+    });
+    
+    auto kick_cmd = app.add_subcommand("kick", "Clear user connection");
+    std::string kick_user;
+    kick_cmd->add_option("username", kick_user, "Username")->required();
+    kick_cmd->callback([&]()
     {
-        return cmd_reset(db, argv[2], argv[3]);
-    }
-    else if (cmd == "kick" && argc == 3)
+        ThreadPool pool(1);
+        auto auth_res = auth::AuthManager::create(db_path, pool);
+        if (!auth_res)
+        {
+            std::println(stderr, "Error: {}", auth_res.error());
+            std::exit(1);
+        }
+        
+        auto res = tools::cmd_kick(auth_res->db(), kick_user);
+        if (!res)
+        {
+            std::println(stderr, "Error: {}", res.error());
+            std::exit(1);
+        }
+        std::println("{}", *res);
+    });
+    
+    auto remove_cmd = app.add_subcommand("remove", "Permanently delete user");
+    std::string remove_user;
+    remove_cmd->add_option("username", remove_user, "Username to delete")->required();
+    remove_cmd->callback([&]()
     {
-        return cmd_kick(db, argv[2]);
-    }
-    else if (cmd == "remove" && argc == 3)
+        ThreadPool pool(1);
+        auto auth_res = auth::AuthManager::create(db_path, pool);
+        if (!auth_res)
+        {
+            std::println(stderr, "Error: {}", auth_res.error());
+            std::exit(1);
+        }
+        
+        auto res = tools::cmd_remove(auth_res->db(), remove_user);
+        if (!res)
+        {
+            std::println(stderr, "Error: {}", res.error());
+            std::exit(1);
+        }
+        std::println("{}", *res);
+    });
+    
+    auto exists_cmd = app.add_subcommand("exists", "Check if database file exists");
+    exists_cmd->callback([&]()
     {
-        return cmd_remove(db, argv[2]);
-    }
-    else
-    {
-        print_usage(argv[0]);
-        return 1;
-    }
+        if (tools::db_exists(db_path))
+        {
+            std::println("Database '{}' exists", db_path);
+        }
+        else
+        {
+            std::println("Database '{}' does not exist", db_path);
+            std::exit(1);
+        }
+    });
+    
+    CLI11_PARSE(app, argc, argv);
+    return 0;
 }

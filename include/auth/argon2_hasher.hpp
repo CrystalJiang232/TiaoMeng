@@ -26,6 +26,6 @@ private:
     static constexpr uint32_t salt_len = 16;
 };
 
-[[nodiscard]] bool check_password(std::string_view password);
+[[nodiscard]] std::expected<void, std::string> check_password(std::string_view password, std::string_view ref_username);
 
 }

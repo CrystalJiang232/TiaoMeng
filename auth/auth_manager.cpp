@@ -45,7 +45,7 @@ net::awaitable<AuthManager::AuthResult> AuthManager::verify(
     
     auto& rec = *rec_opt;
     
-    if (!auth::check_password(password))
+    if (auto res = auth::check_password(password, username); !res)
     {
         co_return AuthResult{false, false};
     }
@@ -84,7 +84,7 @@ net::awaitable<AuthManager::AuthResult> AuthManager::verify(
 
 bool AuthManager::register_user(std::string_view username, std::string_view password)
 {
-    if (!auth::check_password(password))
+    if (auto res = auth::check_password(password, username); !res)
     {
         return false;
     }
