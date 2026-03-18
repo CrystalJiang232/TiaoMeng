@@ -218,7 +218,7 @@ net::awaitable<void> Connection::read_body(uint32_t len)
     }
     
     // Track bytes received
-    if (server) server->metrics().bytes_received += len;
+    if (server) server->metrics().add_bytes_received(len);
     
     // Message parsing
     auto m0 = msg::parse(read_buf);
@@ -311,7 +311,7 @@ net::awaitable<void> Connection::read_body(uint32_t len)
 
 net::awaitable<void> Connection::handle_handshake(const Msg& msg)
 {
-    switch(state.load())
+    switch(state.load(std::memory_order_acquire))
     {
     case ConnState::Connected:
     {
@@ -325,7 +325,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto kp_result = kem.generate_keypair();
         if (!kp_result)
         {
-            if (server) server->metrics().handshakes_failed++;
+            if (server) server->metrics().inc_handshakes_failed();
             send_raw_error("Failed to generate keypair");
             co_return;
         }
@@ -339,7 +339,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto encap_result = kem.encapsulate(cpk);
         if (!encap_result)
         {
-            if (server) server->metrics().handshakes_failed++;
+            if (server) server->metrics().inc_handshakes_failed();
             send_raw_error("Failed to encapsulate to client public key");
             co_return;
         }
@@ -385,7 +385,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto decap_result = kem.decapsulate(cct, kp->secret_key);
         if (!decap_result)
         {
-            if (server) server->metrics().handshakes_failed++;
+            if (server) server->metrics().inc_handshakes_failed();
             send_raw_error("Failed to decapsulate client ciphertext");
             co_return;
         }
@@ -394,7 +394,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         auto encap_result = kem.encapsulate(*client_pk);
         if (!encap_result)
         {
-            if (server) server->metrics().handshakes_failed++;
+            if (server) server->metrics().inc_handshakes_failed();
             send_raw_error("Failed to encapsulate to client public key");
             co_return;
         }
@@ -441,7 +441,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         LOG_INFO("Secure session established with {}", id);
         if (server) 
         {
-            server->metrics().handshakes_completed++;
+            server->metrics().inc_handshakes_completed();
         }
         break;
     }
@@ -477,7 +477,7 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
     auto decrypted = sess.decrypt(ct);
     if (!decrypted)
     {
-        if (server) server->metrics().errors++;
+        if (server) server->metrics().inc_errors();
         LOG_ERROR("Decryption failed in connection with {}", get_id());
         std::ignore = send_error("Decryption failed");
         co_return;
@@ -513,7 +513,7 @@ net::awaitable<void> Connection::handle_request(const json::object& request)
     {
         co_return;
     }
-    if (server) server->metrics().messages_received++;
+    if (server) server->metrics().inc_messages_received();
     evt_hdl.route(shared_from_this(), request);
     co_return;
 }
@@ -540,9 +540,9 @@ void Connection::send(const Msg& msg)
                 bool was_empty = write_queue.empty();
                 write_queue.push_back(msg);
                 
-                if (!write_in_progress.load() && was_empty)
+                if (!write_in_progress.load(std::memory_order_acquire) && was_empty)
                 {
-                    write_in_progress.store(true);
+                    write_in_progress.store(true, std::memory_order_release);
                     should_spawn = true;
                 }
                 LOG_DEBUG("Connection {} dispatch lambda releasing write_mtx", id);
@@ -643,7 +643,7 @@ net::awaitable<void> Connection::write()
             std::lock_guard lock(write_mtx);
             if (write_queue.empty())
             {
-                write_in_progress.store(false);
+                write_in_progress.store(false, std::memory_order_release);
                 co_return;
             }
             msg = std::move(write_queue.front());
@@ -657,7 +657,7 @@ net::awaitable<void> Connection::write()
         {
             {
                 std::lock_guard lock(write_mtx);
-                write_in_progress.store(false);
+                write_in_progress.store(false, std::memory_order_release);
                 write_queue.clear();
             }
             error_and_close("Write timeout");
@@ -669,7 +669,7 @@ net::awaitable<void> Connection::write()
             LOG_WARN("Error occur in write to {}: {}", get_id(), e.message());
             {
                 std::lock_guard lock(write_mtx);
-                write_in_progress.store(false);
+                write_in_progress.store(false, std::memory_order_release);
             }
             error_and_close("Pipe writing error");
             co_return;
@@ -678,8 +678,8 @@ net::awaitable<void> Connection::write()
         // Track bytes and messages sent
         if (server) 
         {
-            server->metrics().bytes_sent += result->bytes;
-            server->metrics().messages_sent++;
+            server->metrics().add_bytes_sent(result->bytes);
+            server->metrics().inc_messages_sent();
         }
     }
 }
@@ -689,7 +689,7 @@ void Connection::shutdown() noexcept
 {
     try
     {
-        state.store(ConnState::Closing);
+        state.store(ConnState::Closing, std::memory_order_release);
 
         boost::system::error_code ec;
         socket.cancel(ec);

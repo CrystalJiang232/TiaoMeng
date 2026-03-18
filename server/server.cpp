@@ -114,7 +114,7 @@ bool Server::start()
         return false;
     }
     
-    running = true;
+    running.store(true, std::memory_order_release);
     
     // Setup shutdown signals on first io_context
     auto& io = io_pool->get_context(0);
@@ -144,25 +144,25 @@ bool Server::start()
 
 void Server::stop()
 {
-    if (!running)
+    if (!running.load(std::memory_order_acquire))
     {
         return;
     }
     
     io_pool->stop();
-    running = false;
+    running.store(false, std::memory_order_release);
     LOG_INFO("Server stopped");
 }
 
 bool Server::is_running() const
 {
-    return running;
+    return running.load(std::memory_order_acquire);
 }
 
 void Server::create_connection(tcp::socket sock, size_t core_id, net::io_context& io)
 {
     (void)core_id;
-    mts.connections_accepted++;
+    mts.inc_connections_accepted();
     std::string id = std::format("{}", sock);
     auto conn = std::make_shared<Connection>(std::move(sock), this, id, cfg, io);
     connections.insert(std::string(conn->get_id()), conn);
@@ -175,7 +175,7 @@ void Server::remove_connection(std::string_view id)
     if (conn) 
     {
         connections.erase(id);
-        mts.connections_closed++;
+        mts.inc_connections_closed();
     }
 }
 

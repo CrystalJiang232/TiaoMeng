@@ -138,14 +138,14 @@ public:
         
         explicit FailureTracker(size_t max_fail = 5) : max_failures(max_fail) {}
         
-        [[nodiscard("record() returns whether count has exceeded max failure after pre self-increment.")]] 
+        [[nodiscard("record() returns whether count has exceeded max failure after pre self-increment.")]]
         bool record()
         {
-            return ++count >= max_failures;
+            return count.fetch_add(1, std::memory_order_acq_rel) + 1 >= max_failures;
         }
-        
-        void reset() { count.store(0, std::memory_order_relaxed); }
-        [[nodiscard]] bool threshold_exceeded() const { return count.load(std::memory_order_relaxed) >= max_failures; }
+
+        void reset() { count.store(0, std::memory_order_release); }
+        [[nodiscard]] bool threshold_exceeded() const { return count.load(std::memory_order_acquire) >= max_failures; }
     };
 
     Connection(tcp::socket, Server*, std::string, const Config& config, net::io_context& io);
@@ -160,13 +160,13 @@ public:
 
     void close(CloseMode mode = CloseMode::Graceful);
     
-    [[nodiscard]] bool is_closing() const {return this->state.load() == ConnState::Closing;}
+    [[nodiscard]] bool is_closing() const {return this->state.load(std::memory_order_acquire) == ConnState::Closing;}
 
     void shutdown() noexcept;
     
     [[nodiscard]] bool has_session_key() const { return sess.is_established(); }
     [[nodiscard]] std::span<const uint8_t> session_key() const { return sess.key(); }
-    [[nodiscard]] bool is_authenticated() const { return state == ConnState::Authenticated; }
+    [[nodiscard]] bool is_authenticated() const { return state.load(std::memory_order_acquire) == ConnState::Authenticated; }
     [[nodiscard]] std::string_view get_auth_user() const { return auth_user; }
     void set_auth_user(std::string_view user) { auth_user = std::string(user); }
     void clear_auth_user() { auth_user.clear(); }

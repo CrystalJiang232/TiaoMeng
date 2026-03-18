@@ -28,7 +28,7 @@ public:
     {
         using Ret = std::invoke_result_t<Fn>;
         
-        if (!running)
+        if (!running.load(std::memory_order_acquire))
         {
             return std::unexpected("ThreadPool stopped");
         }

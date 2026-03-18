@@ -24,21 +24,141 @@ struct ServerMetrics
     
     ServerMetrics() = default;
     
-    void reset() 
-    { 
+    void reset()
+    {
         start_time = std::chrono::steady_clock::now();
-        connections_accepted = 0;
-        connections_closed = 0;
-        handshakes_completed = 0;
-        handshakes_failed = 0;
-        authentications_successful = 0;
-        authentications_failed = 0;
-        messages_received = 0;
-        messages_sent = 0;
-        bytes_received = 0;
-        bytes_sent = 0;
-        errors = 0;
-        timeouts = 0;
+        connections_accepted.store(0, std::memory_order_release);
+        connections_closed.store(0, std::memory_order_release);
+        handshakes_completed.store(0, std::memory_order_release);
+        handshakes_failed.store(0, std::memory_order_release);
+        authentications_successful.store(0, std::memory_order_release);
+        authentications_failed.store(0, std::memory_order_release);
+        messages_received.store(0, std::memory_order_release);
+        messages_sent.store(0, std::memory_order_release);
+        bytes_received.store(0, std::memory_order_release);
+        bytes_sent.store(0, std::memory_order_release);
+        errors.store(0, std::memory_order_release);
+        timeouts.store(0, std::memory_order_release);
+    }
+
+    [[nodiscard]] uint64_t get_connections_accepted(bool precise = false) const
+    {
+        return connections_accepted.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void inc_connections_accepted()
+    {
+        connections_accepted.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] uint64_t get_connections_closed(bool precise = false) const
+    {
+        return connections_closed.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void inc_connections_closed()
+    {
+        connections_closed.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] uint64_t get_handshakes_completed(bool precise = false) const
+    {
+        return handshakes_completed.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void inc_handshakes_completed()
+    {
+        handshakes_completed.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] uint64_t get_handshakes_failed(bool precise = false) const
+    {
+        return handshakes_failed.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void inc_handshakes_failed()
+    {
+        handshakes_failed.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] uint64_t get_authentications_successful(bool precise = false) const
+    {
+        return authentications_successful.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void inc_authentications_successful()
+    {
+        authentications_successful.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] uint64_t get_authentications_failed(bool precise = false) const
+    {
+        return authentications_failed.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void inc_authentications_failed()
+    {
+        authentications_failed.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] uint64_t get_messages_received(bool precise = false) const
+    {
+        return messages_received.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void inc_messages_received()
+    {
+        messages_received.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] uint64_t get_messages_sent(bool precise = false) const
+    {
+        return messages_sent.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void inc_messages_sent()
+    {
+        messages_sent.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] uint64_t get_bytes_received(bool precise = false) const
+    {
+        return bytes_received.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void add_bytes_received(uint64_t bytes)
+    {
+        bytes_received.fetch_add(bytes, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] uint64_t get_bytes_sent(bool precise = false) const
+    {
+        return bytes_sent.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void add_bytes_sent(uint64_t bytes)
+    {
+        bytes_sent.fetch_add(bytes, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] uint64_t get_errors(bool precise = false) const
+    {
+        return errors.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void inc_errors()
+    {
+        errors.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] uint64_t get_timeouts(bool precise = false) const
+    {
+        return timeouts.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
+    }
+
+    void inc_timeouts()
+    {
+        timeouts.fetch_add(1, std::memory_order_relaxed);
     }
 
     void print() const;
@@ -57,18 +177,18 @@ struct std::formatter<ServerMetrics>
         auto now = std::chrono::steady_clock::now();
         auto uptime = std::chrono::duration_cast<std::chrono::seconds>(now - s.start_time).count();
         
-        uint64_t conns_accepted = s.connections_accepted.load();
-        uint64_t conns_closed = s.connections_closed.load();
-        uint64_t hs_completed = s.handshakes_completed.load();
-        uint64_t hs_failed = s.handshakes_failed.load();
-        uint64_t auth_ok = s.authentications_successful.load();
-        uint64_t auth_fail = s.authentications_failed.load();
-        uint64_t msgs_recv = s.messages_received.load();
-        uint64_t msgs_sent = s.messages_sent.load();
-        uint64_t bytes_recv = s.bytes_received.load();
-        uint64_t bytes_sent_total = s.bytes_sent.load();
-        uint64_t err_count = s.errors.load();
-        uint64_t timeout_count = s.timeouts.load();
+        uint64_t conns_accepted = s.get_connections_accepted();
+        uint64_t conns_closed = s.get_connections_closed();
+        uint64_t hs_completed = s.get_handshakes_completed();
+        uint64_t hs_failed = s.get_handshakes_failed();
+        uint64_t auth_ok = s.get_authentications_successful();
+        uint64_t auth_fail = s.get_authentications_failed();
+        uint64_t msgs_recv = s.get_messages_received();
+        uint64_t msgs_sent = s.get_messages_sent();
+        uint64_t bytes_recv = s.get_bytes_received();
+        uint64_t bytes_sent_total = s.get_bytes_sent();
+        uint64_t err_count = s.get_errors();
+        uint64_t timeout_count = s.get_timeouts();
         
         constexpr double MB = static_cast<double>(1024 * 1024);
 

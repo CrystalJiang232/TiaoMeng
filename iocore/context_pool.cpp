@@ -26,7 +26,7 @@ public:
     
     std::expected<void, ContextPoolError> start()
     {
-        if (running)
+        if (running.load(std::memory_order_acquire))
         {
             return std::unexpected(ContextPoolError::AlreadyStarted);
         }
@@ -72,14 +72,14 @@ public:
             cores.push_back(std::move(core));
         }
         
-        running = true;
+        running.store(true, std::memory_order_release);
         LOG_INFO("ContextPool started with {} cores on port {}", n_cores, port);
         return {};
     }
     
     void stop()
     {
-        if (!running)
+        if (!running.load(std::memory_order_acquire))
         {
             return;
         }
@@ -98,7 +98,7 @@ public:
             }
         }
         
-        running = false;
+        running.store(false, std::memory_order_release);
         LOG_INFO("ContextPool stopped");
     }
     
@@ -157,7 +157,7 @@ void ContextPool::stop()
 
 bool ContextPool::is_running() const
 {
-    return impl->running;
+    return impl->running.load(std::memory_order_acquire);
 }
 
 size_t ContextPool::core_count() const

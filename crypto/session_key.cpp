@@ -27,7 +27,7 @@ void SessionKey::reset_nonce()
         {
             random_ctr = (random_ctr << 8) | random_bytes[i];
         }
-        nonce_ctr.store(random_ctr);
+        nonce_ctr.store(random_ctr, std::memory_order_release);
     }
     // If RAND_bytes fails, counter continues from current value (degraded but safe)
 }
@@ -39,7 +39,7 @@ std::optional<std::vector<uint8_t>> SessionKey::encrypt(std::span<const uint8_t>
         return std::nullopt;
     }
     
-    uint64_t ctr = nonce_ctr.fetch_add(1);
+    uint64_t ctr = nonce_ctr.fetch_add(1, std::memory_order_acq_rel);
     AES256GCM::nonce_t nonce{};
     
     // First 4 bytes are zero, last 8 bytes are big-endian counter
@@ -103,7 +103,7 @@ void SessionKey::clear()
 {
     secure_clear(ky);
     last_update = std::nullopt;
-    nonce_ctr.store(0);
+    nonce_ctr.store(0, std::memory_order_release);
 }
 
 } // namespace crypto

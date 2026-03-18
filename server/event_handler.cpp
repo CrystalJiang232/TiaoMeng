@@ -86,7 +86,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
 
     if (auto ret = json_utils::extract_str(request, "username"); !ret)
     {
-        if (self->server) self->server->metrics().authentications_failed++;
+        if (self->server) self->server->metrics().inc_authentications_failed();
         std::ignore = self->send_error("Authentication failed");
         LOG_DEBUG("[EVT] {} handle_auth EXIT: no username", self->get_id());
         return;
@@ -98,7 +98,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
 
     if (auto ret = json_utils::extract_str(request, "password"); !ret)
     {
-        if (self->server) self->server->metrics().authentications_failed++;
+        if (self->server) self->server->metrics().inc_authentications_failed();
         std::ignore = self->send_error("Authentication failed");
         LOG_DEBUG("[EVT] {} handle_auth EXIT: no password", self->get_id());
         return;
@@ -130,7 +130,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
     if (auth_result.locked)
     {
         std::ignore = self->send_error("Account locked");
-        if (self->server) self->server->metrics().authentications_failed++;
+        if (self->server) self->server->metrics().inc_authentications_failed();
         LOG_INFO("Client {} authentication failed: account locked", self->get_id());
         LOG_DEBUG("[EVT] {} handle_auth EXIT: account locked", self->get_id());
         return;
@@ -139,7 +139,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
     if (!auth_result.success)
     {
         std::ignore = self->send_error("Authentication failed");
-        if (self->server) self->server->metrics().authentications_failed++;
+        if (self->server) self->server->metrics().inc_authentications_failed();
         LOG_INFO("Client {} authentication failed", self->get_id());
         LOG_DEBUG("[EVT] {} handle_auth EXIT: auth failed", self->get_id());
         return;
@@ -152,7 +152,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
     self->setstate(ConnState::Authenticated);
     self->reset_failures();
     self->send_encrypted(status_msg("Success", "Authentication successful"));
-    if (self->server) self->server->metrics().authentications_successful++;
+    if (self->server) self->server->metrics().inc_authentications_successful();
     LOG_INFO("Client {} authenticated as {}", self->get_id(), username);
     LOG_DEBUG("[EVT] {} handle_auth EXIT", self->get_id());
 }
