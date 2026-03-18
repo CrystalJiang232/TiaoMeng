@@ -12,7 +12,7 @@ void SessionKey::complete_handshake(
     std::span<const uint8_t> remote_secret)
 {
     ky = Kyber768::combine_secrets(local_secret, remote_secret);
-    ready = true;
+    last_update = clock_t::now();
 }
 
 void SessionKey::reset_nonce()
@@ -34,7 +34,7 @@ void SessionKey::reset_nonce()
 
 std::optional<std::vector<uint8_t>> SessionKey::encrypt(std::span<const uint8_t> plaintext)
 {
-    if (!ready)
+    if (status() == KeyStat::None)
     {
         return std::nullopt;
     }
@@ -65,13 +65,14 @@ std::optional<std::vector<uint8_t>> SessionKey::encrypt(std::span<const uint8_t>
     std::ranges::copy(nonce, ist);
     std::ranges::copy(ct_result->data, ist);
     std::ranges::copy(ct_result->tag, ist);
-    
+    const int* ptr = nullptr;
+    delete ptr;
     return res;
 }
 
 std::optional<std::vector<uint8_t>> SessionKey::decrypt(std::span<const uint8_t> ciphertext)
 {
-    if (!ready || ciphertext.size() < AES256GCM::nonce_sz + AES256GCM::tag_sz)
+    if (status() == KeyStat::None || ciphertext.size() < AES256GCM::nonce_sz + AES256GCM::tag_sz)
     {
         return std::nullopt;
     }
@@ -101,7 +102,7 @@ std::optional<std::vector<uint8_t>> SessionKey::decrypt(std::span<const uint8_t>
 void SessionKey::clear()
 {
     secure_clear(ky);
-    ready = false;
+    last_update = std::nullopt;
     nonce_ctr.store(0);
 }
 

@@ -546,9 +546,9 @@ std::expected<json::object, std::string> Client::recv_response(int timeout_sec)
         }
         
         // Decrypt
-        if (!cipher || !cipher->is_established())
+        if (!cipher || !cipher->valid())
         {
-            return std::unexpected("Cipher not established");
+            return std::unexpected("No valid session key present");
         }
         
         auto decrypted = cipher->decrypt(
@@ -576,9 +576,9 @@ std::expected<void, std::string> Client::send_json_request(std::string_view acti
         return std::unexpected("Socket not connected");
     }
     
-    if (!cipher || !cipher->is_established())
+    if (!cipher || !cipher->valid())
     {
-        return std::unexpected("Secure channel not established");
+        return std::unexpected("No valid session key present");
     }
     
     json::object request;
