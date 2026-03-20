@@ -8,7 +8,6 @@
 !server
 !threadpool
 !tools
-!docker_lib
 !CMakeLists.txt
 !logger
 !iocore
