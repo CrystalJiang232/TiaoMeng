@@ -19,6 +19,19 @@ A high-performance TCP messaging server implementing post-quantum cryptography (
 - liboqs (Kyber768 support)
 - OpenSSL 3.0+ (AES-GCM)
 
+### Installing liboqs (for CMake builds)
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install liboqs-dev  # if available, OR build from source:
+
+# Build from source
+git clone --depth 1 --branch 0.12.0 https://github.com/open-quantum-safe/liboqs.git
+cmake -S liboqs -B liboqs/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+sudo cmake --build liboqs/build -j$(nproc) && sudo cmake --install liboqs/build
+sudo ldconfig
+```
+
 ### Build
 
 ```bash
@@ -106,6 +119,36 @@ On initialization, server loads `server_config.json` from working directory if p
 | logging | file | Log file path | "" | Valid path or empty |
 | logging | max_size_mb | Max log file size | 100 | 1-10000 |
 | logging | enable_console | Log to stdout | true | true/false |
+
+## Docker
+
+Docker build is self-contained and does not require system dependencies.
+
+### Build
+
+```bash
+docker build -t tiaomeng:latest .
+```
+
+### Run
+
+```bash
+docker run -d -p 8080:8080 tiaomeng:latest
+```
+
+With persistent auth database:
+
+```bash
+docker run -d -p 8080:8080 -v $(pwd)/data:/etc/tiaomeng tiaomeng:latest
+```
+
+### User Management
+
+> Detailed commands' information of `user_admin` is self-contained.  
+
+```bash
+docker exec <container> user_admin <args>
+```
 
 ## Architecture
 
