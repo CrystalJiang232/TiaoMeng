@@ -81,19 +81,15 @@ Kyber768::shared_secret_t Kyber768::combine_secrets(
 
     shared_secret_t result{};
     
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (!ctx)
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    if (ctx && 
+        EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) == 1 &&
+        EVP_DigestUpdate(ctx.get(), combined.data(), combined.size()) == 1 &&
+        EVP_DigestFinal_ex(ctx.get(), result.data(), nullptr) == 1)
     {
-        return result;
+        // success
     }
     
-    if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) == 1 &&
-        EVP_DigestUpdate(ctx, combined.data(), combined.size()) == 1 &&
-        EVP_DigestFinal_ex(ctx, result.data(), nullptr) == 1)
-    {
-    }
-    
-    EVP_MD_CTX_free(ctx);
     return result;
 }
 

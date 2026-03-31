@@ -723,7 +723,7 @@ void Connection::close(CloseMode mode)
 {
     // Rush E: don't wait for close_async to exchange
     // Optionally specify another memory order for performance optimization?  
-    if(this->state.exchange(ConnState::Closing) == ConnState::Closing)
+    if(this->state.exchange(ConnState::Closing, std::memory_order_acq_rel) == ConnState::Closing)
     {
         LOG_DEBUG("Connection already closing, deferring");
         return;

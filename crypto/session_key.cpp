@@ -65,8 +65,6 @@ std::optional<std::vector<uint8_t>> SessionKey::encrypt(std::span<const uint8_t>
     std::ranges::copy(nonce, ist);
     std::ranges::copy(ct_result->data, ist);
     std::ranges::copy(ct_result->tag, ist);
-    const int* ptr = nullptr;
-    delete ptr;
     return res;
 }
 
