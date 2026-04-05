@@ -19,6 +19,10 @@ std::expected<Ty, std::string> get_uint(const json::object& obj, std::string_vie
     {
         return std::unexpected(std::format("'{}' must be an integer", key));
     }
+    if (it->value().is_int64() && it->value().get_int64() < 0)
+    {
+        return std::unexpected(std::format("'{}' cannot be negative", key));
+    }
     auto val = it->value().to_number<uint64_t>();
     if (val < static_cast<uint64_t>(min_val) || val > static_cast<uint64_t>(max_val))
     {

@@ -1,258 +1,167 @@
+#include "client/config.hpp"
+#include "client/metrics.hpp"
+#include "client/connection.hpp"
 #include "client/client.hpp"
-#include "extern/CLI11/CLI11.hpp"
+#include "logger/logger.hpp"
+
+#include <boost/asio.hpp>
+#include <thread>
+#include <latch>
+#include <atomic>
 #include <print>
-#include <string>
-#include <cstdint>
-#include <functional>
-#include <unordered_map>
+#include <cstdlib>
+#include <format>
 
-// Mode handler base class
-class ModeHandler
+namespace net = boost::asio;
+
+std::expected<void, std::string> setup_test_users(const LoadTestConfig& cfg)
 {
-public:
-    virtual ~ModeHandler() = default;
-    virtual int run(const std::string& host, uint16_t port) = 0;
-};
-
-// Stub implementations for mode handlers (to be filled by user)
-class InteractiveMode : public ModeHandler
-{
-public:
-    int run(const std::string& host, uint16_t port) override
+    for (size_t i = 0; i < cfg.users_count; ++i)
     {
-        std::println("Interactive mode selected");
-        std::println("Connecting to {}:{}...", host, port);
-        std::println("");
-        std::println("TODO: Implement interactive REPL");
-        std::println("  - Kyber768 handshake");
-        std::println("  - Auth prompt");
-        std::println("  - Command loop with tab completion");
-        std::println("  - Background recv thread");
-        return 0;
-    }
-};
-
-class ScriptMode : public ModeHandler
-{
-public:
-    int run(const std::string& host, uint16_t port) override
-    {
-        std::println("Script mode selected");
-        std::println("Server: {}:{}", host, port);
-        std::println("");
-        std::println("TODO: Implement script execution");
-        std::println("  - Parse JSON script file");
-        std::println("  - Execute steps sequentially");
-        std::println("  - Optional response verification");
-        return 0;
-    }
-};
-
-class BenchMode : public ModeHandler
-{
-public:
-    int run(const std::string& host, uint16_t port) override
-    {
-        std::println("Benchmark mode selected");
-        std::println("Server: {}:{}", host, port);
-        std::println("");
-        std::println("TODO: Implement load testing");
-        std::println("  - Spawn N concurrent connections");
-        std::println("  - Each sends at R rate for D duration");
-        std::println("  - Collect and report metrics");
-        return 0;
-    }
-};
-
-class SingleMode : public ModeHandler
-{
-public:
-    int run(const std::string& host, uint16_t port) override
-    {
-        std::println("Single action mode selected");
-        std::println("Server: {}:{}", host, port);
-        std::println("");
-        std::println("TODO: Implement single action execution");
-        std::println("  - Connect, handshake, auth");
-        std::println("  - Execute specified action");
-        std::println("  - Print response and exit");
-        return 0;
-    }
-};
-
-// Router/Dispatcher for client modes
-class ClientRouter
-{
-public:
-    ClientRouter()
-        : host("127.0.0.1")
-        , port(8080)
-    {
-        setup_app();
-        setup_interactive_mode();
-        setup_script_mode();
-        setup_bench_mode();
-        setup_single_mode();
-        register_modes();
-    }
-
-    int dispatch(int argc, char** argv)
-    {
-        try
+        auto u = std::format("{}{}", cfg.username_prefix, i);
+        auto p = std::format("{}{}", cfg.password_prefix, i);
+        auto cmd = std::format("./build/bin/user_admin add {} {}", u, p);
+        
+        if (std::system(cmd.c_str()) != 0)
         {
-            app.parse(argc, argv);
-            
-            if (selected_mode.empty())
+            return std::unexpected(std::format("Failed to add user {}", u));
+        }
+    }
+    
+    return {};
+}
+
+std::expected<void, std::string> teardown_test_users(const LoadTestConfig& cfg)
+{
+    for (size_t i = 0; i < cfg.users_count; ++i)
+    {
+        auto u = std::format("{}{}", cfg.username_prefix, i);
+        auto cmd = std::format("./build/bin/user_admin remove {}", u);
+        int rc = std::system(cmd.c_str());
+        (void)rc;
+    }
+    
+    return {};
+}
+
+net::awaitable<void> watchdog_timer(net::io_context& io, std::chrono::seconds duration, std::atomic<bool>& stopped)
+{
+    net::steady_timer timer(io);
+    timer.expires_after(duration);
+    co_await timer.async_wait(net::use_awaitable);
+    LOG_INFO("Watchdog: Test duration reached, stopping io_context");
+    stopped.store(true, std::memory_order_release);
+    io.stop();
+}
+
+int run_load_test(const LoadTestConfig& cfg)
+{
+    LOG_DEBUG("Parsed config: host={}, port={}, connections={}, duration={}",
+              cfg.host, cfg.port, cfg.connections, cfg.duration_sec);
+    
+    if (auto r = setup_test_users(cfg); !r)
+    {
+        std::println(stderr, "Setup failed: {}", r.error());
+        Logger::shutdown();
+        return 1;
+    }
+    
+    size_t hw_threads = std::thread::hardware_concurrency();
+    if (hw_threads == 0)
+    {
+        hw_threads = 2;
+    }
+    
+    LOG_DEBUG("Using {} worker threads", hw_threads);
+    
+    net::io_context io(static_cast<int>(hw_threads));
+    MetricsCollector mts;
+    std::latch completion_latch(cfg.connections);
+    std::atomic<bool> stopped{false};
+    
+    auto work_guard = net::make_work_guard(io);
+    
+    for (size_t i = 0; i < cfg.connections; ++i)
+    {
+        auto conn = std::make_shared<LoadConnection>(io, cfg.host, cfg.port, i);
+        net::co_spawn(io,
+            [conn, &conf = cfg, &mts, &completion_latch]() -> net::awaitable<void>
             {
-                std::println(stderr, "Error: No mode specified");
-                std::println("Use --help for usage information");
-                return 1;
-            }
-            
-            auto it = modes.find(selected_mode);
-            if (it == modes.end())
-            {
-                std::println(stderr, "Error: Unknown mode '{}'", selected_mode);
-                return 1;
-            }
-            
-            return it->second->run(host, port);
-        }
-        catch (const CLI::ParseError& e)
-        {
-            return app.exit(e);
-        }
-        catch (const std::exception& e)
-        {
-            std::println(stderr, "Fatal error: {}", e.what());
-            return 1;
-        }
+                LOG_DEBUG("Spawning connection {}", conn->get_idx());
+                co_await conn->run(conf, mts);
+                LOG_DEBUG("Connection {} coroutine exited", conn->get_idx());
+                completion_latch.count_down();
+            },
+            net::detached);
     }
-
-private:
-    void setup_app()
-    {
-        app.name("client");
-        app.description("TiaoMeng Test Client - Multi-mode client for testing the messaging server");
-        app.set_help_all_flag("--help-all", "Expand all help");
-        
-        app.add_option("--host", host, "Server host address")
-            ->default_val("127.0.0.1");
-        
-        app.add_option("-p,--port", port, "Server port")
-            ->default_val(8080)
-            ->check(CLI::Range(1, 65535));
-    }
-
-    void setup_interactive_mode()
-    {
-        auto* cmd = app.add_subcommand("interactive", "Interactive REPL mode");
-        
-        cmd->callback([this]() 
-        {
-            selected_mode = "interactive";
-        });
-    }
-
-    void setup_script_mode()
-    {
-        auto* cmd = app.add_subcommand("script", "Execute commands from script file");
-        
-        cmd->add_option("-f,--file", script_file, "Path to script file (JSON)")
-            ->required();
-        
-        cmd->add_flag("-v,--verify", script_verify, "Verify responses against expected values");
-        
-        cmd->callback([this]() 
-        {
-            selected_mode = "script";
-        });
-    }
-
-    void setup_bench_mode()
-    {
-        auto* cmd = app.add_subcommand("bench", "Benchmark/Load testing mode");
-        
-        cmd->add_option("-c,--connections", bench_connections, "Number of concurrent connections")
-            ->default_val(10)
-            ->check(CLI::Range(1, 10000));
-        
-        cmd->add_option("-d,--duration", bench_duration_sec, "Test duration in seconds")
-            ->default_val(60)
-            ->check(CLI::Range(1, 3600));
-        
-        cmd->add_option("-r,--rate", bench_rate, "Messages per second per connection")
-            ->default_val(10)
-            ->check(CLI::Range(1, 10000));
-        
-        cmd->add_option("-s,--payload-size", bench_payload_size, "Broadcast payload size in bytes")
-            ->default_val(256)
-            ->check(CLI::Range(16, 65536));
-        
-        cmd->add_option("-u,--users", bench_users, "CSV file with username:password pairs");
-        
-        cmd->callback([this]() 
-        {
-            selected_mode = "bench";
-        });
-    }
-
-    void setup_single_mode()
-    {
-        auto* cmd = app.add_subcommand("single", "Execute single action and exit");
-        
-        cmd->add_option("-a,--auth", single_auth, "Credentials in format 'username:password'")
-            ->required();
-        
-        cmd->add_option("--action", single_action, "Action to perform")
-            ->required()
-            ->check(CLI::IsMember({"auth", "broadcast", "command", "logout"}));
-        
-        cmd->add_option("--data", single_data, "JSON data for action (optional)");
-        
-        cmd->callback([this]() 
-        {
-            selected_mode = "single";
-        });
-    }
-
-    void register_modes()
-    {
-        modes["interactive"] = std::make_unique<InteractiveMode>();
-        modes["script"] = std::make_unique<ScriptMode>();
-        modes["bench"] = std::make_unique<BenchMode>();
-        modes["single"] = std::make_unique<SingleMode>();
-    }
-
-    CLI::App app{"TiaoMeng Test Client"};
     
-    // Common options
-    std::string host;
-    uint16_t port;
+    net::co_spawn(io, watchdog_timer(io, 
+        std::chrono::seconds(cfg.duration_sec + cfg.warmup_sec + 10), stopped), net::detached);
     
-    // Mode selection
-    std::string selected_mode;
-    std::unordered_map<std::string, std::unique_ptr<ModeHandler>> modes;
+    std::vector<std::jthread> pool;
+    for (size_t t = 0; t < hw_threads; ++t)
+    {
+        pool.emplace_back([&io]() { io.run(); });
+    }
     
-    // Script mode options
-    std::string script_file;
-    bool script_verify = false;
+    LOG_DEBUG("Waiting for all connections to complete...");
+    completion_latch.wait();
+    LOG_DEBUG("All connections completed");
     
-    // Bench mode options
-    int bench_connections = 10;
-    int bench_duration_sec = 60;
-    int bench_rate = 10;
-    int bench_payload_size = 256;
-    std::string bench_users;
+    work_guard.reset();
     
-    // Single mode options
-    std::string single_auth;
-    std::string single_action;
-    std::string single_data;
-};
+    for (auto& th : pool)
+    {
+        th.join();
+    }
+    
+    LOG_DEBUG("All worker threads joined");
+    
+    std::println("OK: {}  FAIL: {}  RPS: {:.2f}",
+                 mts.ok_count(), mts.fail_count(),
+                 static_cast<double>(mts.ok_count()) / static_cast<double>(cfg.duration_sec));
+    
+    if (auto r = teardown_test_users(cfg); !r)
+    {
+        std::println(stderr, "Teardown failed: {}", r.error());
+    }
+    
+    return 0;
+}
+
+int run_interactive(const LoadTestConfig& cfg)
+{
+    Client client(cfg.host, cfg.port);
+    client.run_interactive_loop();
+    return 0;
+}
 
 int main(int argc, char** argv)
 {
-    ClientRouter router;
-    return router.dispatch(argc, argv);
+    auto cfg = LoadTestConfigParser::parse(argc, argv);
+    if (!cfg)
+    {
+        if (!cfg.error().empty())
+        {
+            std::println(stderr, "Config error: {}", cfg.error());
+            return 1;
+        }
+        return 0;
+    }
+    
+    if (cfg->interactive)
+    {
+        return run_interactive(*cfg);
+    }
+    
+    if (auto r = Logger::init(cfg->log_level, cfg->log_file, cfg->log_max_size_mb, cfg->log_console); !r)
+    {
+        std::println(stderr, "Logger init failed: {}", r.error());
+        return 1;
+    }
+    
+    int ret = run_load_test(*cfg);
+    
+    Logger::shutdown();
+    return ret;
 }

@@ -1,24 +1,26 @@
 #include "client/client.hpp"
-#include "fundamentals/types.hpp"
+
 #include "fundamentals/bytes.hpp"
 #include "fundamentals/msg_serialize.hpp"
-#include "crypto/utils.hpp"
 #include "fundamentals/json_utils.hpp"
+#include "crypto/utils.hpp"
 #include <boost/asio.hpp>
-#include <boost/json.hpp>
-#include <algorithm>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 #include <ranges>
+#include <format>
 #include <print>
+#include <iostream>
+#include <sstream>
 
 namespace json = boost::json;
-using namespace boost::asio;
 using namespace bytes;
 using namespace msg;
+using net::experimental::awaitable_operators::operator||;
 
-Client::Client(net::io_context& io, std::string host, unsigned short port)
-    : io_ctx(io)
-    , host(std::move(host))
-    , port(port)
+Client::Client(std::string h, uint16_t p)
+    : host(std::move(h))
+    , port(p)
+    , sock(io_ctx)
     , state(State::Disconnected)
 {
 }
@@ -32,345 +34,367 @@ std::expected<void, std::string> Client::connect()
 {
     if (state != State::Disconnected)
     {
-        return std::unexpected("Already connected or connecting");
+        return std::unexpected("Already connected");
     }
-    
-    try
+
+    auto result = net::co_spawn(io_ctx, do_connect(), net::use_future);
+    io_ctx.run();
+    io_ctx.restart();
+
+    if (!result.valid())
     {
-        tcp::resolver resolver(io_ctx);
-        auto endpoints = resolver.resolve(host, std::to_string(port));
-        
-        socket = std::make_unique<tcp::socket>(io_ctx);
-        boost::asio::connect(*socket, endpoints);
-        
-        change_state(State::Connected);
-        return {};
+        return std::unexpected("Connection operation failed");
     }
-    catch (const std::exception& e)
+
+    auto ret = result.get();
+    if (!ret)
     {
-        return std::unexpected(std::format("Connection failed: {}", e.what()));
+        return ret;
     }
+
+    change_state(State::Connected);
+    return {};
+}
+
+net::awaitable<std::expected<void, std::string>> Client::do_connect()
+{
+    tcp::resolver resolver(io_ctx);
+    auto [ec, results] = co_await resolver.async_resolve(host, std::to_string(port), net::as_tuple(net::use_awaitable));
+
+    if (ec)
+    {
+        co_return std::unexpected(std::format("Resolve failed: {}", ec.message()));
+    }
+
+    auto [ec2, ep] = co_await net::async_connect(sock, results, net::as_tuple(net::use_awaitable));
+
+    if (ec2)
+    {
+        co_return std::unexpected(std::format("Connect failed: {}", ec2.message()));
+    }
+
+    co_return std::expected<void, std::string>{};
 }
 
 std::expected<void, std::string> Client::disconnect()
 {
-    try
-    {
-        shutdown();
-        return {};
-    }
-    catch (const std::exception& e)
-    {
-        return std::unexpected(std::format("Disconnect failed: {}", e.what()));
-    }
-}
-
-std::expected<Msg::payload_t, std::string> Client::recv_raw(int timeout_sec)
-{
-    if (!socket || !socket->is_open())
-    {
-        return std::unexpected("Socket not connected");
-    }
-    
-    try
-    {
-        // Read header (4 bytes length + 1 byte type)
-        std::array<std::byte, 5> header{};
-        
-        // Set up timeout using async operations with timer
-        std::optional<std::string> timeout_error;
-        std::optional<size_t> bytes_read;
-        
-        net::steady_timer timer(io_ctx);
-        timer.expires_after(std::chrono::seconds(timeout_sec));
-        
-        bool read_complete = false;
-        boost::system::error_code read_ec;
-        
-        net::async_read(*socket, net::buffer(header),
-            [&](const boost::system::error_code& ec, size_t n)
-            {
-                read_ec = ec;
-                bytes_read = n;
-                read_complete = true;
-                timer.cancel();
-            });
-        
-        timer.async_wait([&](const boost::system::error_code& ec)
-        {
-            if (!ec && !read_complete)
-            {
-                boost::system::error_code cancel_ec;
-                socket->cancel(cancel_ec);
-                timeout_error = "Receive timeout";
-            }
-        });
-        
-        // Run io_context until read completes or times out
-        while (!read_complete && !timeout_error)
-        {
-            size_t handlers_executed = io_ctx.run_one();
-            if (handlers_executed == 0)
-            {
-                // No more handlers to run
-                break;
-            }
-        }
-        
-        // Cancel timer if read completed first
-        timer.cancel();
-        
-        if (timeout_error)
-        {
-            return std::unexpected(*timeout_error);
-        }
-        
-        if (!read_complete)
-        {
-            return std::unexpected("Read operation did not complete");
-        }
-        
-        if (read_ec)
-        {
-            return std::unexpected(std::format("Read error: {}", read_ec.message()));
-        }
-        
-        if (!bytes_read || *bytes_read < 5)
-        {
-            return std::unexpected(std::format("Incomplete header received: {} bytes", bytes_read.value_or(0)));
-        }
-        
-        uint32_t msg_len = to_int(header);
-        
-        if (msg_len < 5 || msg_len > Msg::max_len)
-        {
-            return std::unexpected(std::format("Invalid message length: {}", msg_len));
-        }
-        
-        // Read body synchronously (header already received, body should follow immediately)
-        size_t body_len = msg_len - 5;
-        Msg::payload_t payload(body_len);
-        
-        if (body_len > 0)
-        {
-            boost::system::error_code body_ec;
-            size_t body_read = net::read(*socket, net::buffer(payload),
-                net::transfer_exactly(body_len), body_ec);
-            
-            if (body_ec)
-            {
-                return std::unexpected(std::format("Body read error: {}", body_ec.message()));
-            }
-            
-            if (body_read != body_len)
-            {
-                return std::unexpected(std::format("Incomplete body received: {} of {} bytes", body_read, body_len));
-            }
-        }
-        
-        return payload;
-    }
-    catch (const std::exception& e)
-    {
-        return std::unexpected(std::format("Receive error: {}", e.what()));
-    }
-}
-
-std::expected<void, std::string> Client::send_raw(const Msg::payload_t& payload, MsgType type)
-{
-    if (!socket || !socket->is_open())
-    {
-        return std::unexpected("Socket not connected");
-    }
-    
-    auto msg_result = msg::make(payload, type);
-    if (!msg_result)
-    {
-        return std::unexpected("Failed to create message");
-    }
-    
-    auto serialized = msg::serialize(*msg_result);
-    
-    try
-    {
-        net::write(*socket, net::buffer(serialized));
-        return {};
-    }
-    catch (const std::exception& e)
-    {
-        return std::unexpected(std::format("Send failed: {}", e.what()));
-    }
+    shutdown();
+    return {};
 }
 
 std::expected<void, std::string> Client::perform_handshake()
 {
     if (state != State::Connected)
     {
-        return std::unexpected("Must be in Connected state to handshake");
+        return std::unexpected("Must be connected before handshake");
     }
-    
-    kem = std::make_unique<crypto::Kyber768>();
-    
-    auto kp_result = kem->generate_keypair();
-    if (!kp_result)
-    {
-        return std::unexpected("Failed to generate Kyber768 keypair");
-    }
-    client_kp = std::move(*kp_result);
-    
+
     change_state(State::Handshaking);
-    
-    // Step 1: Send client public key
-    auto step1_payload = to_bytes<uint8_t>(client_kp.public_key);
-    auto step1_result = send_raw(step1_payload, plaintext_handshake);
-    if (!step1_result)
+
+    auto result = net::co_spawn(io_ctx, do_handshake(), net::use_future);
+    io_ctx.run();
+    io_ctx.restart();
+
+    if (!result.valid())
     {
-        return std::unexpected(std::format("Failed to send public key: {}", step1_result.error()));
+        change_state(State::Connected);
+        return std::unexpected("Handshake operation failed");
     }
-    
-    // Step 2: Receive server public key + ciphertext (raw binary, NOT JSON)
-    auto step2_payload = recv_raw(5);
-    if (!step2_payload)
+
+    auto ret = result.get();
+    if (!ret)
     {
-        return std::unexpected(std::format("Failed to receive server response: {}", step2_payload.error()));
+        change_state(State::Connected);
+        return ret;
     }
-    
-    if (step2_payload->size() < crypto::Kyber768::public_key_size + crypto::Kyber768::ciphertext_size)
+
+    change_state(State::Established);
+    return {};
+}
+
+net::awaitable<std::expected<void, std::string>> Client::do_handshake()
+{
+    auto kp_opt = kem.generate_keypair();
+    if (!kp_opt)
     {
-        return std::unexpected(std::format("Invalid server response: payload too small (got {}, expected at least {})", 
-            step2_payload->size(), 
-            crypto::Kyber768::public_key_size + crypto::Kyber768::ciphertext_size));
+        co_return std::unexpected("Keypair generation failed");
     }
-    
+
+    kp = std::move(*kp_opt);
+
+    auto step1 = msg::make(to_bytes<uint8_t>(kp->public_key), plaintext_handshake);
+    if (!step1)
+    {
+        co_return std::unexpected("Failed to create handshake message");
+    }
+
+    auto [ec1, n1] = co_await net::async_write(sock, net::buffer(msg::serialize(*step1)), net::as_tuple(net::use_awaitable));
+    if (ec1)
+    {
+        co_return std::unexpected(std::format("Handshake step1 write failed: {}", ec1.message()));
+    }
+
+    auto step2_result = co_await recv_msg(std::chrono::seconds(30));
+    if (!step2_result)
+    {
+        co_return std::unexpected(step2_result.error());
+    }
+
+    auto step2 = std::move(*step2_result);
+    size_t expected_size = crypto::Kyber768::public_key_size + crypto::Kyber768::ciphertext_size;
+    if (step2.payload.size() < expected_size)
+    {
+        co_return std::unexpected("Invalid handshake response size");
+    }
+
     std::span<const uint8_t> server_pk(
-        reinterpret_cast<const uint8_t*>(step2_payload->data()),
+        reinterpret_cast<const uint8_t*>(step2.payload.data()),
         crypto::Kyber768::public_key_size
     );
     std::span<const uint8_t> server_ct(
-        reinterpret_cast<const uint8_t*>(step2_payload->data()) + crypto::Kyber768::public_key_size,
+        reinterpret_cast<const uint8_t*>(step2.payload.data()) + crypto::Kyber768::public_key_size,
         crypto::Kyber768::ciphertext_size
     );
-    
-    // Decapsulate to get local shared secret
-    auto decap_result = kem->decapsulate(server_ct, client_kp.secret_key);
-    if (!decap_result)
+
+    auto decap = kem.decapsulate(server_ct, kp->secret_key);
+    if (!decap)
     {
-        return std::unexpected("Failed to decapsulate server ciphertext");
-    }
-    ss_local = std::move(*decap_result);
-    
-    // Step 3: Encapsulate to server public key and send
-    auto encap_result = kem->encapsulate(server_pk);
-    if (!encap_result)
-    {
-        return std::unexpected("Failed to encapsulate to server public key");
-    }
-    ss_remote = std::move(encap_result->shared_secret);
-    
-    auto step3_payload = to_bytes<uint8_t>(encap_result->ciphertext);
-    auto step3_result = send_raw(step3_payload, plaintext_handshake);
-    if (!step3_result)
-    {
-        return std::unexpected(std::format("Failed to send ciphertext: {}", step3_result.error()));
-    }
-    
-    // Combine secrets to create session key (ONE STEP EARLY as required by step 4's recv_Response)
-    cipher = std::make_unique<crypto::SessionKey>();
-    cipher->complete_handshake(
-        std::span<const uint8_t>(ss_remote->data(), ss_remote->size()),
-        std::span<const uint8_t>(ss_local->data(), ss_local->size())
-    ); //Probably needs to update the calling syntax anyway
-    
-    // Clear sensitive data
-    crypto::secure_clear(client_kp.secret_key);
-    if (ss_local) 
-    {
-        crypto::secure_clear(*ss_local);
+        co_return std::unexpected("Decapsulation failed");
     }
 
-    // Step 4: Receive encrypted ConnectionReady response (JSON)
-    auto ready_response = recv_response(5);
-    if (!ready_response)
+    ss_local = std::move(*decap);
+
+    auto encap = kem.encapsulate(server_pk);
+    if (!encap)
     {
-        return std::unexpected(std::format("Failed to receive ConnectionReady: {}", ready_response.error()));
+        co_return std::unexpected("Encapsulation failed");
     }
-    
-    auto status_result = json_utils::extract_str(*ready_response, "status");
-    if (!status_result)
+
+    ss_remote = std::move(encap->shared_secret);
+
+    auto step3 = msg::make(to_bytes<uint8_t>(encap->ciphertext), plaintext_handshake);
+    if (!step3)
     {
-        return std::unexpected(status_result.error());
+        co_return std::unexpected("Failed to create step3 message");
     }
-    
-    if (*status_result != "ConnectionReady")
+
+    auto [ec3, n3] = co_await net::async_write(sock, net::buffer(msg::serialize(*step3)), net::as_tuple(net::use_awaitable));
+    if (ec3)
     {
-        return std::unexpected(std::format("Unexpected status: {}", *status_result));
+        co_return std::unexpected(std::format("Handshake step3 write failed: {}", ec3.message()));
     }
-    
-    //Change state goes here
-    change_state(State::Established);
-    return {};
+
+    cipher.complete_handshake(
+        std::span<const uint8_t>(ss_remote->data(), ss_remote->size()),
+        std::span<const uint8_t>(ss_local->data(), ss_local->size())
+    );
+
+    crypto::secure_clear(kp->secret_key);
+
+    auto step4_result = co_await recv_msg(std::chrono::seconds(30));
+    if (!step4_result)
+    {
+        co_return std::unexpected(step4_result.error());
+    }
+
+    auto step4 = std::move(*step4_result);
+    auto decrypted = cipher.decrypt(
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(step4.payload.data()), step4.payload.size())
+    );
+
+    if (!decrypted)
+    {
+        co_return std::unexpected("Failed to decrypt handshake response");
+    }
+
+    std::string json_str(reinterpret_cast<const char*>(decrypted->data()), decrypted->size());
+    json::error_code jec;
+    auto parsed = json::parse(json_str, jec);
+
+    if (jec || !parsed.is_object())
+    {
+        co_return std::unexpected("Invalid JSON in handshake response");
+    }
+
+    auto status = json_utils::extract_str(parsed.as_object(), "status");
+    if (!status || *status != "ConnectionReady")
+    {
+        co_return std::unexpected(std::format("Unexpected handshake status: {}", status.value_or("<missing>")));
+    }
+
+    co_return std::expected<void, std::string>{};
 }
 
 std::expected<void, std::string> Client::authenticate(std::string_view username, std::string_view password)
 {
     if (state != State::Established)
     {
-        return std::unexpected("Connection not established yet");
+        return std::unexpected("Must complete handshake before auth");
     }
-    
-    json::object auth_data
+
+    auto result = net::co_spawn(io_ctx, do_authenticate(username, password), net::use_future);
+    io_ctx.run();
+    io_ctx.restart();
+
+    if (!result.valid())
     {
-        {"username", std::string(username)},
-        {"password", std::string(password)}
-    };
-    
-    auto send_result = send_json_request("auth", auth_data);
-    if (!send_result)
-    {
-        return std::unexpected(send_result.error());
+        return std::unexpected("Auth operation failed");
     }
-    
-    auto recv_result = recv_response();
-    if (!recv_result)
+
+    auto ret = result.get();
+    if (!ret)
     {
-        return std::unexpected(recv_result.error());
+        return ret;
     }
-    
-    auto status_result = json_utils::extract_str(*recv_result, "status");
-    if (!status_result)
-    {
-        return std::unexpected(status_result.error());
-    }
-    
-    if (*status_result != "Success")
-    {
-        return std::unexpected(std::format("Authentication failed: {}", *status_result));
-    }
-    
+
     change_state(State::Authenticated);
     return {};
 }
 
-std::expected<json::object, std::string> Client::send_command(const json::object& data)
+net::awaitable<std::expected<void, std::string>> Client::do_authenticate(std::string_view username, std::string_view password)
 {
-    auto send_result = send_json_request("command", data);
-    if (!send_result)
+    json::object req{{"action", "auth"}, {"username", std::string(username)}, {"password", std::string(password)}};
+    auto json_str = json::serialize(req);
+    std::vector<uint8_t> plaintext(json_str.begin(), json_str.end());
+
+    auto encrypted = cipher.encrypt(plaintext);
+    if (!encrypted)
     {
-        return std::unexpected(send_result.error());
+        co_return std::unexpected("Encryption failed");
     }
-    
-    return recv_response();
+
+    auto payload = *encrypted
+        | std::views::transform([](uint8_t x) { return bytes::int2byte(x); })
+        | std::ranges::to<Msg::payload_t>();
+
+    auto msg_result = msg::make(payload, encrypted_request);
+    if (!msg_result)
+    {
+        co_return std::unexpected("Failed to create auth message");
+    }
+
+    auto [ec, n] = co_await net::async_write(sock, net::buffer(msg::serialize(*msg_result)), net::as_tuple(net::use_awaitable));
+    if (ec)
+    {
+        co_return std::unexpected(std::format("Auth write failed: {}", ec.message()));
+    }
+
+    auto resp_result = co_await recv_response(std::chrono::seconds(30));
+    if (!resp_result)
+    {
+        co_return std::unexpected(resp_result.error());
+    }
+
+    auto status = json_utils::extract_str(*resp_result, "status");
+    if (!status || *status != "Success")
+    {
+        co_return std::unexpected(std::format("Auth failed: {}", status.value_or("<missing>")));
+    }
+
+    co_return std::expected<void, std::string>{};
 }
 
-std::expected<json::object, std::string> Client::send_broadcast(const json::object& data)
+std::expected<json::object, std::string> Client::send_command(const json::object& data)
 {
-    auto send_result = send_json_request("broadcast", data);
-    if (!send_result)
+    if (state != State::Authenticated)
     {
-        return std::unexpected(send_result.error());
+        return std::unexpected("Must be authenticated");
     }
-    
-    return recv_response();
+
+    auto result = net::co_spawn(io_ctx, do_send_command(data), net::use_future);
+    io_ctx.run();
+    io_ctx.restart();
+
+    if (!result.valid())
+    {
+        return std::unexpected("Command operation failed");
+    }
+
+    return result.get();
+}
+
+net::awaitable<std::expected<json::object, std::string>> Client::do_send_command(const json::object& data)
+{
+    json::object req = data;
+    req["action"] = "command";
+
+    auto json_str = json::serialize(req);
+    std::vector<uint8_t> plaintext(json_str.begin(), json_str.end());
+
+    auto encrypted = cipher.encrypt(plaintext);
+    if (!encrypted)
+    {
+        co_return std::unexpected("Encryption failed");
+    }
+
+    auto payload = *encrypted
+        | std::views::transform([](uint8_t x) { return bytes::int2byte(x); })
+        | std::ranges::to<Msg::payload_t>();
+
+    auto msg_result = msg::make(payload, encrypted_request);
+    if (!msg_result)
+    {
+        co_return std::unexpected("Failed to create command message");
+    }
+
+    auto [ec, n] = co_await net::async_write(sock, net::buffer(msg::serialize(*msg_result)), net::as_tuple(net::use_awaitable));
+    if (ec)
+    {
+        co_return std::unexpected(std::format("Command write failed: {}", ec.message()));
+    }
+
+    co_return co_await recv_response(std::chrono::seconds(30));
+}
+
+std::expected<json::object, std::string> Client::send_broadcast(std::string_view message)
+{
+    if (state != State::Authenticated)
+    {
+        return std::unexpected("Must be authenticated");
+    }
+
+    auto result = net::co_spawn(io_ctx, do_send_broadcast(message), net::use_future);
+    io_ctx.run();
+    io_ctx.restart();
+
+    if (!result.valid())
+    {
+        return std::unexpected("Broadcast operation failed");
+    }
+
+    return result.get();
+}
+
+net::awaitable<std::expected<json::object, std::string>> Client::do_send_broadcast(std::string_view message)
+{
+    json::object req{{"action", "broadcast"}, {"message", std::string(message)}};
+
+    auto json_str = json::serialize(req);
+    std::vector<uint8_t> plaintext(json_str.begin(), json_str.end());
+
+    auto encrypted = cipher.encrypt(plaintext);
+    if (!encrypted)
+    {
+        co_return std::unexpected("Encryption failed");
+    }
+
+    auto payload = *encrypted
+        | std::views::transform([](uint8_t x) { return bytes::int2byte(x); })
+        | std::ranges::to<Msg::payload_t>();
+
+    auto msg_result = msg::make(payload, encrypted_request);
+    if (!msg_result)
+    {
+        co_return std::unexpected("Failed to create broadcast message");
+    }
+
+    auto [ec, n] = co_await net::async_write(sock, net::buffer(msg::serialize(*msg_result)), net::as_tuple(net::use_awaitable));
+    if (ec)
+    {
+        co_return std::unexpected(std::format("Broadcast write failed: {}", ec.message()));
+    }
+
+    co_return co_await recv_response(std::chrono::seconds(30));
 }
 
 std::expected<void, std::string> Client::logout()
@@ -379,274 +403,145 @@ std::expected<void, std::string> Client::logout()
     {
         return std::unexpected("Not authenticated");
     }
-    
-    json::object empty_data;
-    auto send_result = send_json_request("logout", empty_data);
-    if (!send_result)
+
+    auto result = net::co_spawn(io_ctx, do_logout(), net::use_future);
+    io_ctx.run();
+    io_ctx.restart();
+
+    if (!result.valid())
     {
-        return std::unexpected(send_result.error());
+        return std::unexpected("Logout operation failed");
     }
-    
-    auto recv_result = recv_response();
-    if (!recv_result)
+
+    auto ret = result.get();
+    if (!ret)
     {
-        return std::unexpected(recv_result.error());
+        return ret;
     }
-    
-    auto status_result = json_utils::extract_str(*recv_result, "status");
-    if (!status_result)
-    {
-        return std::unexpected(status_result.error());
-    }
-    
-    if (*status_result != "Success")
-    {
-        return std::unexpected(std::format("Logout failed: {}", *status_result));
-    }
-    
+
     change_state(State::Established);
     return {};
 }
 
-std::expected<json::object, std::string> Client::recv_response(int timeout_sec)
+net::awaitable<std::expected<void, std::string>> Client::do_logout()
 {
-    if (!socket || !socket->is_open())
-    {
-        return std::unexpected("Socket not connected");
-    }
-    
-    try
-    {
-        // Read header (4 bytes length + 1 byte type)
-        std::array<std::byte, 5> header{};
-        
-        // Set up timeout using async operations with timer
-        std::optional<std::string> timeout_error;
-        std::optional<size_t> bytes_read;
-        
-        net::steady_timer timer(io_ctx);
-        timer.expires_after(std::chrono::seconds(timeout_sec));
-        
-        bool read_complete = false;
-        boost::system::error_code read_ec;
-        
-        net::async_read(*socket, net::buffer(header),
-            [&](const boost::system::error_code& ec, size_t n)
-            {
-                read_ec = ec;
-                bytes_read = n;
-                read_complete = true;
-                timer.cancel();
-            });
-        
-        timer.async_wait([&](const boost::system::error_code& ec)
-        {
-            if (!ec && !read_complete)
-            {
-                boost::system::error_code cancel_ec;
-                socket->cancel(cancel_ec);
-                timeout_error = "Receive timeout";
-            }
-        });
-        
-        // Run io_context until read completes or times out
-        while (!read_complete && !timeout_error)
-        {
-            size_t handlers_executed = io_ctx.run_one();
-            if (handlers_executed == 0)
-            {
-                // No more handlers to run
-                break;
-            }
-        }
-        
-        // Cancel timer if read completed first
-        timer.cancel();
-        
-        if (timeout_error)
-        {
-            return std::unexpected(*timeout_error);
-        }
-        
-        if (!read_complete)
-        {
-            return std::unexpected("Read operation did not complete");
-        }
-        
-        if (read_ec)
-        {
-            return std::unexpected(std::format("Read error: {}", read_ec.message()));
-        }
-        
-        if (!bytes_read || *bytes_read < 5)
-        {
-            return std::unexpected(std::format("Incomplete header received: {} bytes", bytes_read.value_or(0)));
-        }
-        
-        uint32_t msg_len = to_int(header);
-        MsgType msg_type = static_cast<MsgType>(header[4]);
-        
-        if (msg_len < 5 || msg_len > Msg::max_len)
-        {
-            return std::unexpected(std::format("Invalid message length: {}", msg_len));
-        }
-
-        if (!is_encrypted(msg_type))
-        {
-            return std::unexpected(std::format("Message type schematic error: unexpected non-encrypted message received"));
-        }
-        
-        // Read body synchronously
-        size_t body_len = msg_len - 5;
-        std::vector<std::byte> body(body_len);
-        
-        if (body_len > 0)
-        {
-            boost::system::error_code body_ec;
-            size_t body_read = net::read(*socket, net::buffer(body),
-                net::transfer_exactly(body_len), body_ec);
-            
-            if (body_ec)
-            {
-                return std::unexpected(std::format("Body read error: {}", body_ec.message()));
-            }
-            
-            if (body_read != body_len)
-            {
-                return std::unexpected(std::format("Incomplete body received: {} of {} bytes", body_read, body_len));
-            }
-        }
-        
-        std::vector<std::byte> full_msg;
-        full_msg.reserve(msg_len);
-
-        auto it = std::back_insert_iterator(full_msg);
-        std::ranges::copy(header, it);
-        std::ranges::copy(body, it); //When will views::concat be online awa
-        
-        auto msg_result = msg::parse(full_msg);
-        if (!msg_result)
-        {
-            return std::unexpected("Failed to parse message");
-        }
-        
-        // Check if encrypted
-        if (!is_encrypted(msg_result->type))
-        {
-            // Plaintext message (error during handshake)
-            auto json_result = parse_json_response(
-                std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(msg_result->payload.data()),
-                                        msg_result->payload.size())
-            );
-            if (!json_result)
-            {
-                return std::unexpected("Failed to parse plaintext JSON");
-            }
-            return *json_result;
-        }
-        
-        // Decrypt
-        if (!cipher || !cipher->valid())
-        {
-            return std::unexpected("No valid session key present");
-        }
-        
-        auto decrypted = cipher->decrypt(
-            std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(msg_result->payload.data()),
-                                    msg_result->payload.size())
-        );
-        
-        if (!decrypted)
-        {
-            return std::unexpected("Decryption failed");
-        }
-        
-        return parse_json_response(*decrypted);
-    }
-    catch (const std::exception& e)
-    {
-        return std::unexpected(std::format("Receive error: {}", e.what()));
-    }
-}
-
-std::expected<void, std::string> Client::send_json_request(std::string_view action, const json::object& data)
-{
-    if (!socket || !socket->is_open())
-    {
-        return std::unexpected("Socket not connected");
-    }
-    
-    if (!cipher || !cipher->valid())
-    {
-        return std::unexpected("No valid session key present");
-    }
-    
-    json::object request;
-    request["action"] = std::string(action);
-    
-    for (const auto& [key, value] : data)
-    {
-        request[key] = value;
-    }
-    
-    std::string json_str = json::serialize(request);
+    json::object req{{"action", "logout"}};
+    auto json_str = json::serialize(req);
     std::vector<uint8_t> plaintext(json_str.begin(), json_str.end());
-    
-    auto encrypted = cipher->encrypt(plaintext);
+
+    auto encrypted = cipher.encrypt(plaintext);
     if (!encrypted)
     {
-        return std::unexpected("Encryption failed");
+        co_return std::unexpected("Encryption failed");
     }
-    
-    auto msg_result = msg::make(
-        std::span<const std::byte>(reinterpret_cast<const std::byte*>(encrypted->data()),
-                                   encrypted->size()),
-        encrypted_request
-    );
-    
+
+    auto payload = *encrypted
+        | std::views::transform([](uint8_t x) { return bytes::int2byte(x); })
+        | std::ranges::to<Msg::payload_t>();
+
+    auto msg_result = msg::make(payload, encrypted_request);
     if (!msg_result)
     {
-        return std::unexpected("Failed to create message");
+        co_return std::unexpected("Failed to create logout message");
     }
-    
-    auto serialized = msg::serialize(*msg_result);
-    
-    try
+
+    auto [ec, n] = co_await net::async_write(sock, net::buffer(msg::serialize(*msg_result)), net::as_tuple(net::use_awaitable));
+    if (ec)
     {
-        net::write(*socket, net::buffer(serialized));
-        return {};
+        co_return std::unexpected(std::format("Logout write failed: {}", ec.message()));
     }
-    catch (const std::exception& e)
+
+    auto resp_result = co_await recv_response(std::chrono::seconds(30));
+    if (!resp_result)
     {
-        return std::unexpected(std::format("Send failed: {}", e.what()));
+        co_return std::unexpected(resp_result.error());
     }
+
+    co_return std::expected<void, std::string>{};
 }
 
-std::expected<json::object, std::string> Client::parse_json_response(std::span<const uint8_t> data)
+net::awaitable<std::expected<json::object, std::string>> Client::recv_response(std::chrono::seconds timeout)
 {
-    try
+    auto msg_result = co_await recv_msg(timeout);
+    if (!msg_result)
     {
-        std::string json_str(reinterpret_cast<const char*>(data.data()), data.size());
-        
-        json::error_code ec;
-        auto parsed = json::parse(json_str, ec);
-        
-        if (ec)
-        {
-            return std::unexpected(std::format("JSON parse error: {}", ec.message()));
-        }
-        
-        if (!parsed.is_object())
-        {
-            return std::unexpected("Response is not a JSON object");
-        }
-        
-        return parsed.as_object();
+        co_return std::unexpected(msg_result.error());
     }
-    catch (const std::exception& e)
+
+    auto msg = std::move(*msg_result);
+    auto decrypted = cipher.decrypt(
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(msg.payload.data()), msg.payload.size())
+    );
+
+    if (!decrypted)
     {
-        return std::unexpected(std::format("Parse error: {}", e.what()));
+        co_return std::unexpected("Decryption failed");
     }
+
+    std::string json_str(decrypted->begin(), decrypted->end());
+    json::error_code jec;
+    auto parsed = json::parse(json_str, jec);
+
+    if (jec || !parsed.is_object())
+    {
+        co_return std::unexpected("Invalid JSON in response");
+    }
+
+    co_return parsed.as_object();
+}
+
+net::awaitable<std::expected<Msg, std::string>> Client::recv_msg(std::chrono::seconds timeout)
+{
+    net::steady_timer timer(io_ctx);
+    timer.expires_after(timeout);
+
+    auto read_op = [&]() -> net::awaitable<std::expected<Msg, std::string>>
+    {
+        std::array<std::byte, 5> hdr{};
+        auto [ec1, n1] = co_await net::async_read(sock, net::buffer(hdr), net::as_tuple(net::use_awaitable));
+        timer.cancel();
+
+        if (ec1 || n1 != 5)
+        {
+            co_return std::unexpected(std::format("Header read failed: {} (read {} bytes)", ec1.message(), n1));
+        }
+
+        uint32_t len = bytes::to_int(hdr);
+        if (len < 5 || len > Msg::max_len)
+        {
+            co_return std::unexpected("Invalid message length");
+        }
+
+        std::vector<std::byte> buf(len);
+        std::ranges::copy(hdr, buf.begin());
+        size_t body_len = len - 5;
+
+        if (body_len > 0)
+        {
+            auto [ec2, n2] = co_await net::async_read(sock, net::buffer(buf.data() + 5, body_len), net::as_tuple(net::use_awaitable));
+            if (ec2 || n2 != body_len)
+            {
+                co_return std::unexpected(std::format("Body read failed: {} (read {} bytes)", ec2.message(), n2));
+            }
+        }
+
+        auto parsed = msg::parse(buf);
+        if (!parsed)
+        {
+            co_return std::unexpected("Message parse failed");
+        }
+
+        co_return *parsed;
+    };
+
+    auto timer_op = [&]() -> net::awaitable<std::expected<Msg, std::string>>
+    {
+        std::ignore = co_await timer.async_wait(net::as_tuple(net::use_awaitable));
+        co_return std::unexpected("Receive timeout");
+    };
+
+    auto result = co_await (read_op() || timer_op());
+    co_return std::get<0>(result);
 }
 
 void Client::change_state(State new_state)
@@ -656,24 +551,237 @@ void Client::change_state(State new_state)
 
 void Client::shutdown() noexcept
 {
-    try
+    boost::system::error_code ec;
+    sock.cancel(ec);
+    sock.close(ec);
+
+    if (ss_local)
     {
-        if (socket && socket->is_open())
+        crypto::secure_clear(*ss_local);
+    }
+    if (ss_remote)
+    {
+        crypto::secure_clear(*ss_remote);
+    }
+    if (kp)
+    {
+        crypto::secure_clear(kp->secret_key);
+    }
+
+    cipher.clear();
+    change_state(State::Disconnected);
+}
+
+std::expected<void, std::string> Client::process_command(std::string_view line)
+{
+    std::string trimmed(line);
+    trimmed.erase(0, trimmed.find_first_not_of(" \t\r\n"));
+    trimmed.erase(trimmed.find_last_not_of(" \t\r\n") + 1);
+
+    if (trimmed.empty())
+    {
+        return {};
+    }
+
+    std::istringstream iss(trimmed);
+    std::string cmd;
+    iss >> cmd;
+
+    if (cmd == "help")
+    {
+        std::println("Available commands:");
+        std::println("  connect [host] [port]  - Connect to server (uses config if no args)");
+        std::println("  auth <user> <pass>     - Authenticate with credentials");
+        std::println("  command <json>         - Send command request");
+        std::println("  broadcast <message>    - Send broadcast message");
+        std::println("  logout                 - Logout current session");
+        std::println("  disconnect             - Close connection");
+        std::println("  quit/exit              - Exit interactive mode");
+        std::println("  help                   - Show this help");
+        return {};
+    }
+
+    if (cmd == "quit" || cmd == "exit")
+    {
+        return std::unexpected("QUIT");
+    }
+
+    if (cmd == "connect")
+    {
+        std::string new_host;
+        uint16_t new_port = 0;
+        iss >> new_host >> new_port;
+
+        if (!new_host.empty())
         {
-            boost::system::error_code ec;
-            socket->close(ec);
+            host = new_host;
         }
-        socket.reset();
-        kem.reset();
-        cipher.reset();
-        
-        if (ss_local) crypto::secure_clear(*ss_local);
-        if (ss_remote) crypto::secure_clear(*ss_remote);
-        crypto::secure_clear(client_kp.secret_key);
-        
-        state = State::Disconnected;
+        if (new_port != 0)
+        {
+            port = new_port;
+        }
+
+        auto result = connect();
+        if (!result)
+        {
+            std::println("Connect failed: {}", result.error());
+            return {};
+        }
+
+        result = perform_handshake();
+        if (!result)
+        {
+            std::println("Handshake failed: {}", result.error());
+            std::ignore = disconnect();
+            return {};
+        }
+
+        std::println("Connected and handshake completed. Use 'auth <user> <pass>' to authenticate.");
+        return {};
     }
-    catch (...)
+
+    if (cmd == "auth")
     {
+        std::string username, password;
+        iss >> username >> password;
+
+        if (username.empty() || password.empty())
+        {
+            std::print("Username: ");
+            std::flush(std::cout);
+            std::getline(std::cin, username);
+            username.erase(0, username.find_first_not_of(" \t\r\n"));
+            username.erase(username.find_last_not_of(" \t\r\n") + 1);
+
+            std::print("Password: ");
+            std::flush(std::cout);
+            std::getline(std::cin, password);
+        }
+
+        if (username.empty() || password.empty())
+        {
+            std::println("Error: Username and password required");
+            return {};
+        }
+
+        auto result = authenticate(username, password);
+        if (!result)
+        {
+            std::println("Auth failed: {}", result.error());
+            return {};
+        }
+
+        std::println("Authenticated successfully.");
+        return {};
     }
+
+    if (cmd == "command")
+    {
+        std::string json_str;
+        std::getline(iss, json_str);
+        json_str.erase(0, json_str.find_first_not_of(" \t"));
+
+        if (json_str.empty())
+        {
+            std::println("Error: JSON payload required");
+            return {};
+        }
+
+        json::error_code jec;
+        auto parsed = json::parse(json_str, jec);
+        if (jec || !parsed.is_object())
+        {
+            std::println("Error: Invalid JSON");
+            return {};
+        }
+
+        auto result = send_command(parsed.as_object());
+        if (!result)
+        {
+            std::println("Command failed: {}", result.error());
+            return {};
+        }
+
+        std::println("Response: {}", json::serialize(*result));
+        return {};
+    }
+
+    if (cmd == "broadcast")
+    {
+        std::string message;
+        std::getline(iss, message);
+        message.erase(0, message.find_first_not_of(" \t"));
+
+        if (message.empty())
+        {
+            std::println("Error: Message required");
+            return {};
+        }
+
+        auto result = send_broadcast(message);
+        if (!result)
+        {
+            std::println("Broadcast failed: {}", result.error());
+            return {};
+        }
+
+        std::println("Response: {}", json::serialize(*result));
+        return {};
+    }
+
+    if (cmd == "logout")
+    {
+        auto result = logout();
+        if (!result)
+        {
+            std::println("Logout failed: {}", result.error());
+            return {};
+        }
+
+        std::println("Logged out successfully.");
+        return {};
+    }
+
+    if (cmd == "disconnect")
+    {
+        auto result = disconnect();
+        if (!result)
+        {
+            std::println("Disconnect failed: {}", result.error());
+            return {};
+        }
+
+        std::println("Disconnected.");
+        return {};
+    }
+
+    std::println("Unknown command: {}. Type 'help' for available commands.", cmd);
+    return {};
+}
+
+void Client::run_interactive_loop()
+{
+    std::println("TiaoMeng Interactive Client");
+    std::println("Type 'help' for available commands, 'quit' to exit.");
+    std::println();
+
+    std::string line;
+    while (true)
+    {
+        std::print("> ");
+        std::flush(std::cout);
+
+        if (!std::getline(std::cin, line))
+        {
+            break;
+        }
+
+        auto result = process_command(line);
+        if (!result && result.error() == "QUIT")
+        {
+            break;
+        }
+    }
+
+    std::println("Goodbye.");
 }
