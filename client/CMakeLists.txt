@@ -1,8 +1,8 @@
 add_executable(client
     main.cpp
-    connection.cpp
-    config.cpp
     client.cpp
+    config.cpp
+    connection.cpp
 )
 
 target_include_directories(client PRIVATE ${CMAKE_SOURCE_DIR}/include)

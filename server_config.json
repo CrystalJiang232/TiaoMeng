@@ -21,6 +21,6 @@
     "level": "debug",
     "file": "server.log",
     "max_size_mb": 100,
-    "enable_console": false
+    "enable_console": true
   }
 }

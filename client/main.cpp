@@ -1,6 +1,5 @@
 #include "client/config.hpp"
 #include "client/metrics.hpp"
-#include "client/connection.hpp"
 #include "client/client.hpp"
 #include "logger/logger.hpp"
 
@@ -83,13 +82,22 @@ int run_load_test(const LoadTestConfig& cfg)
     
     for (size_t i = 0; i < cfg.connections; ++i)
     {
-        auto conn = std::make_shared<LoadConnection>(io, cfg.host, cfg.port, i);
+        ClientConfig client_cfg;
+        client_cfg.host = cfg.host;
+        client_cfg.port = cfg.port;
+        client_cfg.rate_per_sec = cfg.rate_per_sec;
+        client_cfg.payload_size = cfg.payload_size;
+        client_cfg.test_duration = std::chrono::seconds(cfg.duration_sec);
+        client_cfg.warmup = std::chrono::seconds(cfg.warmup_sec);
+        client_cfg.username_prefix = cfg.username_prefix;
+        client_cfg.password_prefix = cfg.password_prefix;
+        client_cfg.user_index = i % cfg.users_count;
+        
+        auto client = std::make_shared<Client>(client_cfg, io);
         net::co_spawn(io,
-            [conn, &conf = cfg, &mts, &completion_latch]() -> net::awaitable<void>
+            [client, &mts, &completion_latch]() -> net::awaitable<void>
             {
-                LOG_DEBUG("Spawning connection {}", conn->get_idx());
-                co_await conn->run(conf, mts);
-                LOG_DEBUG("Connection {} coroutine exited", conn->get_idx());
+                co_await client->run(mts);
                 completion_latch.count_down();
             },
             net::detached);
@@ -131,8 +139,12 @@ int run_load_test(const LoadTestConfig& cfg)
 
 int run_interactive(const LoadTestConfig& cfg)
 {
-    Client client(cfg.host, cfg.port);
-    client.run_interactive_loop();
+    ClientConfig client_cfg;
+    client_cfg.host = cfg.host;
+    client_cfg.port = cfg.port;
+    
+    Client client(client_cfg);
+    client.run_interactive();
     return 0;
 }
 
