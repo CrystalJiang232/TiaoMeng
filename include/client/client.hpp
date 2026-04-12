@@ -65,6 +65,10 @@ public:
         std::optional<std::reference_wrapper<MetricsCollector>> metrics = std::nullopt);
 
     // Sync API (Phase 2)
+    // WARNING: Sync API requires Client to own its io_context (default constructor).
+    // Using these with external io_context (Client(cfg, external_io)) will deadlock
+    // unless io_context is already running in another thread. Use async_* methods instead.
+    // TODO: Consider adding std::unexpected return for external io_context misuse.
     [[nodiscard]] std::expected<void, std::string> connect();
     [[nodiscard]] std::expected<void, std::string> disconnect();
     [[nodiscard]] std::expected<void, std::string> handshake();

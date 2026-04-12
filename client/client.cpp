@@ -672,25 +672,22 @@ net::awaitable<std::expected<Msg, std::string>> Client::read_msg(std::chrono::se
     std::array<std::byte, 5> hdr{};
     
     auto hdr_result = co_await readWithTimeout(net::buffer(hdr), timeout);
-    if (!hdr_result)
-    {
-        co_return std::unexpected("Read header timeout");
-    }
-    
-    if (hdr_result->ec)
+    if (!hdr_result || hdr_result->ec)
     {
         shutdown();
-        co_return std::unexpected("Connection closed");
+        co_return std::unexpected("Read header error, connection closed");
     }
     
     if (hdr_result->bytes != 5)
     {
-        co_return std::unexpected(std::format("Header read failed: incomplete read"));
+        shutdown();
+        co_return std::unexpected("Header read failed: incomplete read");
     }
     
     uint32_t len = to_int(hdr);
     if (len < 5 || len > Msg::max_len)
     {
+        shutdown();
         co_return std::unexpected("Invalid message length");
     }
     
@@ -704,20 +701,16 @@ net::awaitable<std::expected<Msg, std::string>> Client::read_msg(std::chrono::se
             net::buffer(read_buf.data() + 5, body_len), 
             timeout);
         
-        if (!body_result)
-        {
-            co_return std::unexpected("Read body timeout");
-        }
-        
-        if (body_result->ec)
+        if (!body_result || body_result->ec)
         {
             shutdown();
-            co_return std::unexpected("Connection closed");
+            co_return std::unexpected("Read body error, connection closed");
         }
         
         if (body_result->bytes != body_len)
         {
-            co_return std::unexpected(std::format("Body read failed: incomplete read"));
+            shutdown();
+            co_return std::unexpected("Body read failed: incomplete read");
         }
     }
     
@@ -735,16 +728,11 @@ net::awaitable<std::expected<void, std::string>> Client::send_msg(const Msg& m)
     auto buf = msg::serialize(m);
     
     auto result = co_await writeWithTimeout(net::buffer(buf), cfg.request_timeout);
-    if (!result)
+    if (!result || result->ec)
     {
-        co_return std::unexpected("Write timeout");
+        shutdown();
+        co_return std::unexpected(std::format("Write failed, connection closed"));
     }
-    
-    if (result->ec)
-    {
-        co_return std::unexpected(std::format("Write failed: {}", result->ec.message()));
-    }
-    
     co_return std::expected<void, std::string>{};
 }
 
@@ -986,11 +974,11 @@ void Client::run_interactive()
         static const std::unordered_map<std::string, std::vector<std::string>> abbrevs = {
             {"connect", {"c", "conn", "connect"}},
             {"auth", {"a", "login", "auth"}},
-            {"command", {"co", "cmd", "command"}},
-            {"broadcast", {"b", "br", "cast", "broadcast"}},
-            {"disconnect", {"d", "disc", "disconnect"}},
-            {"status", {"s", "stat", "state", "status"}},
-            {"logout", {"l", "log", "logout"}},
+            {"command", {"cmd", "command"}},
+            {"broadcast", {"b", "broadcast"}},
+            {"disconnect", {"d", "disconnect"}},
+            {"status", {"s", "stat", "status"}},
+            {"logout", {"l", "logout"}},
             {"help", {"h", "?", "help"}},
             {"quit", {"q", "exit", "quit"}}
         };
@@ -1050,13 +1038,13 @@ void Client::run_interactive()
         if (cmd == "help")
         {
             std::println("Commands:");
-            std::println("  connect [host] [port]  - Connect to server (c, conn)");
+            std::println("  connect [host] [port]  - Connect to server (conn)");
             std::println("  auth <user> <pass>     - Authenticate (a, login)");
-            std::println("  command <json>         - Send command (co, cmd)");
-            std::println("  broadcast <message>    - Broadcast message (b, br, cast)");
-            std::println("  status                 - Show connection status (s, stat, state)");
-            std::println("  logout                 - Log out (keep connection) (l, log)");
-            std::println("  disconnect             - Close connection (d, disc)");
+            std::println("  command <json>         - Send command (cmd)");
+            std::println("  broadcast <message>    - Broadcast message (b)");
+            std::println("  status                 - Show connection status (s, stat)");
+            std::println("  logout                 - Log out (keep connection) (l)");
+            std::println("  disconnect             - Close connection (d)");
             std::println("  quit/exit              - Exit (q)");
             std::println("  help                   - Show this help (h, ?)");
             continue;
