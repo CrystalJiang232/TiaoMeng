@@ -22,9 +22,8 @@ namespace json = boost::json;
 enum class ClientState : uint8_t
 {
     Disconnected,
-    Connecting,
-    HandshakeStep1,
-    HandshakeStep2,
+    Connected,
+    Handshaking,
     Established,
     Authenticated,
     Closing
@@ -84,7 +83,7 @@ public:
     // State inspection
     [[nodiscard]] ClientState getState() const { return state.load(std::memory_order_acquire); }
     [[nodiscard]] bool is_connected() const;
-    [[nodiscard]] bool is_established() const { return cipher.is_established(); }
+    [[nodiscard]] bool is_established() const;
     [[nodiscard]] bool is_authenticated() const;
 
 private:

@@ -47,8 +47,6 @@ net::awaitable<std::expected<void, std::string>> Client::async_connect()
         co_return std::unexpected("Already connected or connecting");
     }
     
-    setState(ClientState::Connecting);
-    
     tcp::resolver resolver(strand);
     auto [ec, results] = co_await resolver.async_resolve(
         cfg.host, 
@@ -72,7 +70,7 @@ net::awaitable<std::expected<void, std::string>> Client::async_connect()
         co_return std::unexpected(std::format("Connect failed: {}", ec2.message()));
     }
     
-    setState(ClientState::HandshakeStep1);
+    setState(ClientState::Connected);
     co_return std::expected<void, std::string>{};
 }
 
@@ -84,9 +82,9 @@ net::awaitable<std::expected<void, std::string>> Client::async_disconnect()
 
 net::awaitable<std::expected<void, std::string>> Client::async_handshake()
 {
-    if (getState() != ClientState::HandshakeStep1)
+    if (getState() != ClientState::Connected)
     {
-        co_return std::unexpected("Must be in HandshakeStep1 state");
+        co_return std::unexpected("Must be connected before handshake");
     }
     
     // Simple workaround: ignore underlying error message anyway
@@ -126,6 +124,8 @@ net::awaitable<std::expected<void, std::string>> Client::handshakeStep1()
     {
         co_return std::unexpected(std::format("Handshake step1 write failed: {}", ec.message()));
     }
+
+    setState(ClientState::Handshaking); // ?
     
     co_return std::expected<void, std::string>{};
 }
@@ -193,7 +193,6 @@ net::awaitable<std::expected<void, std::string>> Client::handshakeStep2()
     
     crypto::secure_clear(kp->secret_key);
     
-    setState(ClientState::HandshakeStep2);
     co_return std::expected<void, std::string>{};
 }
 
@@ -802,6 +801,12 @@ bool Client::is_connected() const
     return s != ClientState::Disconnected && s != ClientState::Closing;
 }
 
+bool Client::is_established() const
+{
+    auto s = getState();
+    return s == ClientState::Established || s == ClientState::Authenticated;
+}
+
 bool Client::is_authenticated() const
 {
     return getState() == ClientState::Authenticated;
@@ -972,25 +977,22 @@ void Client::run_interactive()
     auto resolve_cmd = [](std::string_view input) -> std::optional<std::string>
     {
         static const std::unordered_map<std::string, std::vector<std::string>> abbrevs = {
-            {"connect", {"c", "conn", "connect"}},
-            {"auth", {"a", "login", "auth"}},
-            {"command", {"cmd", "command"}},
-            {"broadcast", {"b", "broadcast"}},
-            {"disconnect", {"d", "disconnect"}},
-            {"status", {"s", "stat", "status"}},
-            {"logout", {"l", "logout"}},
-            {"help", {"h", "?", "help"}},
-            {"quit", {"q", "exit", "quit"}}
+            {"connect", {"c", "conn"}},
+            {"auth", {"a", "login"}},
+            {"command", {"cmd"}},
+            {"broadcast", {"b"}},
+            {"disconnect", {"d"}},
+            {"status", {"s", "stat"}},
+            {"logout", {"l"}},
+            {"help", {"h", "?"}},
+            {"quit", {"q", "exit"}}
         };
         
         for (const auto& [full, aliases] : abbrevs)
         {
-            for (const auto& alias : aliases)
+            if (input == full || std::ranges::contains(aliases, input))
             {
-                if (alias.starts_with(input))
-                {
-                    return full;
-                }
+                return full;
             }
         }
         return std::nullopt;
@@ -1178,9 +1180,8 @@ void Client::run_interactive()
             switch (s)
             {
                 case ClientState::Disconnected: state_str = "Disconnected"; break;
-                case ClientState::Connecting: state_str = "Connecting"; break;
-                case ClientState::HandshakeStep1: 
-                case ClientState::HandshakeStep2: state_str = "Handshaking"; break;
+                case ClientState::Connected: state_str = "Connected"; break;
+                case ClientState::Handshaking: state_str = "Handshaking"; break;
                 case ClientState::Established: state_str = "Established"; break;
                 case ClientState::Authenticated: state_str = "Authenticated"; break;
                 case ClientState::Closing: state_str = "Closing"; break;

@@ -29,8 +29,7 @@ public:
     struct SecurityCfg
     {
         size_t max_failures_before_disconnect = 5;
-        std::chrono::seconds session_timeout{3600};
-        std::chrono::seconds key_rotation_interval{86400};
+        std::chrono::seconds key_lifetime{350};
         bool require_client_auth = false;
     };
 

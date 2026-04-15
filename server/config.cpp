@@ -164,21 +164,13 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
         {
             return std::unexpected(max_fail.error());
         }
-        if (auto session_to = get_uint<uint64_t>(sec, "session_timeout_sec", 10, 86400 * 30, 3600); session_to)
+        if (auto key_lf = get_uint<uint64_t>(sec, "key_lifetime_sec", 60, 86400, 350); key_lf)
         {
-            config.sec.session_timeout = std::chrono::seconds(*session_to);
+            config.sec.key_lifetime = std::chrono::seconds(*key_lf);
         }
         else
         {
-            return std::unexpected(session_to.error());
-        }
-        if (auto key_rot = get_uint<uint64_t>(sec, "key_rotation_interval_sec", 60, 86400 * 365, 86400); key_rot)
-        {
-            config.sec.key_rotation_interval = std::chrono::seconds(*key_rot);
-        }
-        else
-        {
-            return std::unexpected(key_rot.error());
+            return std::unexpected(key_lf.error());
         }
         config.sec.require_client_auth = get_bool(sec, "require_client_auth", true);
     }
