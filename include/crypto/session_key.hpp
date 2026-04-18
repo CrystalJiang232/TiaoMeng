@@ -21,8 +21,9 @@ public:
     using key_t = std::array<uint8_t, 32>;
     using clock_t = std::chrono::steady_clock;
     using time_point_t = clock_t::time_point;
+    using duration_t = std::chrono::seconds;
 
-    SessionKey() = default;
+    explicit SessionKey(duration_t lifetime = std::chrono::seconds(350));
     
     void complete_handshake(
         std::span<const uint8_t> local_secret,
@@ -32,7 +33,7 @@ public:
     [[nodiscard]] bool is_established() const { return last_update.has_value(); }
     [[nodiscard]] bool valid() const {return status() == KeyStat::Active;}
     [[nodiscard]] KeyStat status() const {return last_update.has_value() ? 
-        *last_update + KEY_LIFETIME >= clock_t::now() ? KeyStat::Active : KeyStat::Expired : 
+        *last_update + key_lifetime >= clock_t::now() ? KeyStat::Active : KeyStat::Expired : 
         KeyStat::None;}
     [[nodiscard]] std::span<const uint8_t> key() const { return std::span(ky); }
     
@@ -46,8 +47,7 @@ private:
     key_t ky;
     std::optional<time_point_t> last_update;
     std::atomic<uint64_t> nonce_ctr{0};
-
-    static constexpr auto KEY_LIFETIME = std::chrono::seconds(350);
+    const duration_t key_lifetime;
 };
 
 } // namespace crypto

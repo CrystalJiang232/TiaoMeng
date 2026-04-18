@@ -164,7 +164,7 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
         {
             return std::unexpected(max_fail.error());
         }
-        if (auto key_lf = get_uint<uint64_t>(sec, "key_lifetime_sec", 60, 86400, 350); key_lf)
+        if (auto key_lf = get_uint<uint64_t>(sec, "key_lifetime_sec", 30, 86400, 45); key_lf)
         {
             config.sec.key_lifetime = std::chrono::seconds(*key_lf);
         }

@@ -11,7 +11,8 @@ EventHandler::EventHandler() : hdls{
     {"auth",handle_auth},
     {"command", handle_command},
     {"broadcast", handle_broadcast},
-    {"logout", handle_logout}
+    {"logout", handle_logout},
+    {"rekey", handle_rekey}
 }
 {
 
@@ -230,4 +231,23 @@ void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::o
         LOG_DEBUG("[EVT] {} handle_logout EXIT: not auth", self->get_id());
         return;
     }
+}
+
+void EventHandler::handle_rekey(std::shared_ptr<Connection> self, const json::object& request)
+{
+    std::ignore = request;
+    LOG_DEBUG("[EVT] {} handle_rekey ENTER", self->get_id());
+    
+    auto st = self->getstate();
+    if (st != ConnState::Established && st != ConnState::Authenticated)
+    {
+        std::ignore = self->send_error("Invalid state for rekeying");
+        LOG_DEBUG("[EVT] {} handle_rekey EXIT: invalid state", self->get_id());
+        return;
+    }
+    
+    self->cache_and_set_rekeying();
+    self->send_encrypted(status_msg("RekeyStart", "Begin rekeying handshake"));
+    LOG_INFO("Client {} starting rekey", self->get_id());
+    LOG_DEBUG("[EVT] {} handle_rekey EXIT", self->get_id());
 }

@@ -23,9 +23,11 @@ Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const
     , server(srv)
     , id(std::move(conn_id))
     , state(ConnState::Connected)
+    , cached_state(std::nullopt)
     , write_in_progress(false)
     , fail_tracker(config.security().max_failures_before_disconnect)
     , cfg(config)
+    , sess(config.security().key_lifetime)
 {
     LOG_INFO("Connection established with id = {}", id);
 }
@@ -244,6 +246,8 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         case ConnState::Connected:
         [[fallthrough]];
         case ConnState::Handshaking:
+        [[fallthrough]];
+        case ConnState::Rekeying:
         if (encrypted)
         {
             error_and_close("Encrypted messages not allowed during handshake");
@@ -452,6 +456,127 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         std::ignore = send_error("Handshake already completed");
         co_return;
     
+    case ConnState::Rekeying:
+    {
+        if (msg.payload.size() == Kyber768::public_key_size)
+        {
+            auto kp_result = kem.generate_keypair();
+            if (!kp_result)
+            {
+                if (server) server->metrics().inc_handshakes_failed();
+                send_raw_error("Failed to generate keypair");
+                co_return;
+            }
+            kp = std::move(*kp_result);
+            
+            std::span<const uint8_t> cpk(
+                reinterpret_cast<const uint8_t*>(msg.payload.data()),
+                Kyber768::public_key_size
+            );
+
+            auto encap_result = kem.encapsulate(cpk);
+            if (!encap_result)
+            {
+                if (server) server->metrics().inc_handshakes_failed();
+                send_raw_error("Failed to encapsulate to client public key");
+                co_return;
+            }
+            ss_A = std::move(encap_result->shared_secret);
+            
+            std::vector<uint8_t> payload;
+            payload.reserve(Kyber768::public_key_size + Kyber768::ciphertext_size);
+            
+            std::ranges::copy(kp->public_key, std::back_inserter(payload));
+            std::ranges::copy(encap_result->ciphertext, std::back_inserter(payload));
+
+            auto send_result = msg::make(to_bytes<uint8_t>(payload), plaintext_handshake);
+            if (!send_result)
+            {
+                send_raw_error(std::format("Failed to create handshake message, errc = {}", std::to_underlying(send_result.error())));
+                co_return;
+            }
+            send(*send_result);
+
+            client_pk = cpk | std::ranges::to<Kyber768::key_t>();
+        }
+        else if (msg.payload.size() >= Kyber768::ciphertext_size)
+        {
+            std::span<const uint8_t> cct(
+                reinterpret_cast<const uint8_t*>(msg.payload.data()),
+                Kyber768::ciphertext_size
+            );
+            
+            auto decap_result = kem.decapsulate(cct, kp->secret_key);
+            if (!decap_result)
+            {
+                if (server) server->metrics().inc_handshakes_failed();
+                send_raw_error("Failed to decapsulate client ciphertext");
+                co_return;
+            }
+            ss_local = std::move(*decap_result);
+            
+            auto encap_result = kem.encapsulate(*client_pk);
+            if (!encap_result)
+            {
+                if (server) server->metrics().inc_handshakes_failed();
+                send_raw_error("Failed to encapsulate to client public key");
+                co_return;
+            }
+            ss_remote = std::move(encap_result->shared_secret);
+            
+            sess.complete_handshake(
+                std::span<const uint8_t>(ss_local->data(), ss_local->size()),
+                std::span<const uint8_t>(ss_A->data(), ss_A->size())
+            );
+            
+            auto response = status_msg("RekeyComplete", "Secure channel re-established");
+            
+            auto plaintext = json::serialize(response) 
+                | std::views::transform([](char c) { return static_cast<uint8_t>(c); })
+                | std::ranges::to<std::vector<uint8_t>>();
+            
+            auto encrypted = sess.encrypt(plaintext);
+            if (!encrypted)
+            {
+                LOG_ERROR("Failed to encrypt rekey response");
+                error_and_close("Failed to encrypt rekey response");
+                co_return;
+            }
+            
+            auto payload = *encrypted 
+                | std::views::transform(int2byte) 
+                | std::ranges::to<Msg::payload_t>();
+            
+            auto send_result = msg::make(payload, encrypted_response);
+            if (!send_result)
+            {
+                LOG_ERROR("Failed to create encrypted response message");
+                error_and_close("Failed to create encrypted response message");
+                co_return;
+            }
+            send(*send_result);
+            
+            kp->secret_key.clear();
+            kp->secret_key.shrink_to_fit();
+            ss_A.reset();
+            client_pk.reset();
+            
+            restore_cached_state();
+            LOG_INFO("Secure session re-established with {}", id);
+            if (server) 
+            {
+                server->metrics().inc_handshakes_completed();
+            }
+        }
+        else
+        {
+            send_raw_error(std::format("Invalid rekey payload size: expected {} or at least {}, got {}",
+                Kyber768::public_key_size, Kyber768::ciphertext_size, msg.payload.size()));
+            co_return;
+        }
+        break;
+    }
+    
     case ConnState::Closing:
         co_return;
 
@@ -462,11 +587,25 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
     }
 }
 
+void Connection::cache_and_set_rekeying()
+{
+    auto current = getstate();
+    cached_state = current;
+    state.store(ConnState::Rekeying, std::memory_order_release);
+}
+
 net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 {
     if (!sess.is_established())
     {
         send_raw_error("Session key not established");
+        co_return;
+    }
+    
+    bool key_was_expired = !sess.valid();
+    if (key_was_expired && getstate() != ConnState::Rekeying)
+    {
+        std::ignore = send_error("Key expired, rekeying required");
         co_return;
     }
 

@@ -7,6 +7,10 @@
 namespace crypto
 {
 
+SessionKey::SessionKey(duration_t lifetime) : key_lifetime(lifetime)
+{
+}
+
 void SessionKey::complete_handshake(
     std::span<const uint8_t> local_secret,
     std::span<const uint8_t> remote_secret)

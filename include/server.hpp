@@ -197,6 +197,7 @@ private:
     net::awaitable<void> handle_handshake(const Msg& msg);
     net::awaitable<void> handle_encrypted(const Msg& msg);
     net::awaitable<void> handle_request(const boost::json::object& request);
+    void cache_and_set_rekeying();
     
     EventHandler evt_hdl;
     
@@ -205,6 +206,16 @@ private:
     std::optional<crypto::Kyber768::shared_secret_t> ss_local;
     std::optional<crypto::Kyber768::shared_secret_t> ss_remote;
     crypto::SessionKey sess;
+    
+public:
+    void restore_cached_state()
+    {
+        if (cached_state)
+        {
+            state.store(*cached_state, std::memory_order_release);
+            cached_state.reset();
+        }
+    }
     std::optional<crypto::Kyber768::key_t> client_pk;
     std::optional<crypto::Kyber768::shared_secret_t> ss_A;
 
@@ -218,6 +229,7 @@ private:
     std::deque<Msg> write_queue;
 
     std::atomic<ConnState> state;
+    std::optional<ConnState> cached_state;
     std::atomic<bool> write_in_progress{false};
     FailureTracker fail_tracker;
     const Config& cfg;
