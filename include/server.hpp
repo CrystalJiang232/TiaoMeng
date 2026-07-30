@@ -109,6 +109,8 @@ public:
 
 private:
     void create_connection(tcp::socket sock, size_t core_id, net::io_context& io);
+    void arm_shutdown_signal();
+    void arm_metrics_signal();
     
     const Config& cfg;
     ServerMetrics mts;

@@ -119,27 +119,66 @@ bool Server::start()
     // Setup shutdown signals on first io_context
     auto& io = io_pool->get_context(0);
     signals.emplace(io, SIGINT, SIGTERM);
-    signals->async_wait([this](auto, auto sig)
+    arm_shutdown_signal();
+
+    metrics_signals.emplace(io, SIGUSR1);
+    arm_metrics_signal();
+
+    LOG_INFO("Server started on {}:{} with {} I/O cores",
+             cfg.server().bind_address, cfg.server().port, io_pool->core_count());
+    return true;
+}
+
+void Server::arm_shutdown_signal()
+{
+    signals->async_wait([this](boost::system::error_code ec, int sig)
     {
+        if (ec == net::error::operation_aborted)
+        {
+            return;
+        }
+        if (ec)
+        {
+            LOG_WARN("Shutdown signal wait failed: {}", ec.message());
+            if (running.load(std::memory_order_acquire))
+            {
+                arm_shutdown_signal();
+            }
+            return;
+        }
+
         LOG_WARN("Received signal {}, shutting down...", sig);
         LOG_INFO("{}", mts);
         stop();
     });
-    
-    metrics_signals.emplace(io, SIGUSR1);
-    std::function<void(boost::system::error_code, int)> metrics_handler = [this, &metrics_handler](boost::system::error_code ec, int sig)
+}
+
+void Server::arm_metrics_signal()
+{
+    metrics_signals->async_wait([this](boost::system::error_code ec, int sig)
     {
-        if (!ec && sig == SIGUSR1)
+        if (ec == net::error::operation_aborted)
+        {
+            return;
+        }
+        if (ec)
+        {
+            LOG_WARN("Metrics signal wait failed: {}", ec.message());
+            if (running.load(std::memory_order_acquire))
+            {
+                arm_metrics_signal();
+            }
+            return;
+        }
+        if (sig == SIGUSR1)
         {
             LOG_INFO("{}", mts);
         }
-        metrics_signals->async_wait(metrics_handler);
-    };
-    metrics_signals->async_wait(metrics_handler);
-    
-    LOG_INFO("Server started on {}:{} with {} I/O cores", 
-             cfg.server().bind_address, cfg.server().port, io_pool->core_count());
-    return true;
+        if (running.load(std::memory_order_acquire))
+        {
+            arm_metrics_signal();
+        }
+    });
 }
 
 void Server::stop()
@@ -149,6 +188,14 @@ void Server::stop()
         return;
     }
     
+    if (signals)
+    {
+        signals->cancel();
+    }
+    if (metrics_signals)
+    {
+        metrics_signals->cancel();
+    }
     io_pool->stop();
     running.store(false, std::memory_order_release);
     LOG_INFO("Server stopped");
