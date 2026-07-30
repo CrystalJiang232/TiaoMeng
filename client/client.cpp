@@ -10,6 +10,7 @@
 #include <sstream>
 #include <print>
 #include <unordered_map>
+#include <algorithm>
 
 namespace json = boost::json;
 using namespace bytes;
@@ -23,6 +24,7 @@ Client::Client(const ClientConfig& cfg)
     , io_ctx(*io_ctx_storage)
     , strand(net::make_strand(io_ctx))
     , sock(strand)
+    , response_timer(strand)
 {
 }
 
@@ -32,6 +34,7 @@ Client::Client(const ClientConfig& cfg, net::io_context& external_io)
     , io_ctx(external_io)
     , strand(net::make_strand(io_ctx))
     , sock(strand)
+    , response_timer(strand)
 {
 }
 
@@ -47,26 +50,79 @@ net::awaitable<std::expected<void, std::string>> Client::async_connect()
         co_return std::unexpected("Already connected or connecting");
     }
     
-    tcp::resolver resolver(strand);
-    auto [ec, results] = co_await resolver.async_resolve(
+    struct TimeoutState
+    {
+        bool expired = false;
+        tcp::socket* socket = nullptr;
+    };
+
+    auto resolve_state = std::make_shared<TimeoutState>();
+    auto resolver = std::make_shared<tcp::resolver>(strand);
+    active_resolver = resolver;
+    auto resolve_timer = std::make_shared<net::steady_timer>(strand);
+    resolve_timer->expires_after(cfg.connect_timeout);
+    resolve_timer->async_wait(
+        [resolver, resolve_state](const boost::system::error_code& ec)
+        {
+            if (!ec)
+            {
+                resolve_state->expired = true;
+                resolver->cancel();
+            }
+        });
+
+    auto [ec, results] = co_await resolver->async_resolve(
         cfg.host, 
         std::to_string(cfg.port), 
         net::as_tuple(net::use_awaitable));
+    resolve_timer->cancel();
+    active_resolver.reset();
     
     if (ec)
     {
         shutdown();
+        if (resolve_state->expired)
+        {
+            co_return std::unexpected("Resolve timed out");
+        }
         co_return std::unexpected(std::format("Resolve failed: {}", ec.message()));
     }
-    
+
+    if (stop_requested.load(std::memory_order_acquire))
+    {
+        shutdown();
+        co_return std::unexpected("Connect cancelled");
+    }
+
+    auto connect_state = std::make_shared<TimeoutState>();
+    connect_state->socket = &sock;
+    auto connect_timer = std::make_shared<net::steady_timer>(strand);
+    connect_timer->expires_after(cfg.connect_timeout);
+    connect_timer->async_wait(
+        [connect_state](const boost::system::error_code& timer_ec)
+        {
+            if (!timer_ec && connect_state->socket != nullptr)
+            {
+                connect_state->expired = true;
+                boost::system::error_code cancel_ec;
+                connect_state->socket->cancel(cancel_ec);
+            }
+        });
+
     auto [ec2, ep] = co_await net::async_connect(
         sock, 
         results, 
         net::as_tuple(net::use_awaitable));
+    connect_timer->cancel();
+    connect_state->socket = nullptr;
     
     if (ec2)
     {
         shutdown();
+        if (connect_state->expired)
+        {
+            co_return std::unexpected("Connect timed out");
+        }
         co_return std::unexpected(std::format("Connect failed: {}", ec2.message()));
     }
     
@@ -115,14 +171,11 @@ net::awaitable<std::expected<void, std::string>> Client::handshakeStep1()
         co_return std::unexpected("Failed to create handshake message");
     }
     
-    auto [ec, n] = co_await net::async_write(
-        sock, 
-        net::buffer(msg::serialize(*step1)), 
-        net::as_tuple(net::use_awaitable));
-    
-    if (ec)
+    auto step1_buf = msg::serialize(*step1);
+    auto step1_write = co_await writeWithTimeout(net::buffer(step1_buf), cfg.handshake_timeout);
+    if (!step1_write || step1_write->ec)
     {
-        co_return std::unexpected(std::format("Handshake step1 write failed: {}", ec.message()));
+        co_return std::unexpected("Handshake step1 write failed");
     }
 
     setState(ClientState::Handshaking); // ?
@@ -132,7 +185,8 @@ net::awaitable<std::expected<void, std::string>> Client::handshakeStep1()
 
 net::awaitable<std::expected<void, std::string>> Client::handshakeStep2()
 {
-    auto step2_result = co_await read_msg(cfg.handshake_timeout);
+    auto step2_result = co_await read_msg(
+        std::chrono::steady_clock::now() + cfg.handshake_timeout);
     if (!step2_result)
     {
         co_return std::unexpected(step2_result.error());
@@ -176,14 +230,11 @@ net::awaitable<std::expected<void, std::string>> Client::handshakeStep2()
         co_return std::unexpected("Failed to create step3 message");
     }
     
-    auto [ec3, n3] = co_await net::async_write(
-        sock, 
-        net::buffer(msg::serialize(*step3)), 
-        net::as_tuple(net::use_awaitable));
-    
-    if (ec3)
+    auto step3_buf = msg::serialize(*step3);
+    auto step3_write = co_await writeWithTimeout(net::buffer(step3_buf), cfg.handshake_timeout);
+    if (!step3_write || step3_write->ec)
     {
-        co_return std::unexpected(std::format("Handshake step3 write failed: {}", ec3.message()));
+        co_return std::unexpected("Handshake step3 write failed");
     }
     
     cipher.complete_handshake(
@@ -198,7 +249,8 @@ net::awaitable<std::expected<void, std::string>> Client::handshakeStep2()
 
 net::awaitable<std::expected<void, std::string>> Client::handshakeStep3()
 {
-    auto step4_result = co_await read_msg(cfg.handshake_timeout);
+    auto step4_result = co_await read_msg(
+        std::chrono::steady_clock::now() + cfg.handshake_timeout);
     if (!step4_result)
     {
         co_return std::unexpected(step4_result.error());
@@ -267,7 +319,8 @@ net::awaitable<std::expected<void, std::string>> Client::async_auth(
         co_return send_r;
     }
     
-    auto resp_result = co_await read_msg(cfg.request_timeout);
+    auto resp_result = co_await read_msg(
+        std::chrono::steady_clock::now() + cfg.request_timeout);
     if (!resp_result)
     {
         co_return std::unexpected(resp_result.error());
@@ -332,38 +385,20 @@ net::awaitable<std::expected<json::object, std::string>> Client::async_send_comm
         co_return std::unexpected("Failed to create command message");
     }
     
+    auto route_r = begin_routed_response();
+    if (!route_r)
+    {
+        co_return std::unexpected(route_r.error());
+    }
+
     auto send_r = co_await send_msg(*msg_result);
     if (!send_r)
     {
+        cancel_routed_response();
         co_return std::unexpected(send_r.error());
     }
     
-    auto resp_result = co_await read_msg(cfg.request_timeout);
-    if (!resp_result)
-    {
-        co_return std::unexpected(resp_result.error());
-    }
-    
-    auto resp = std::move(*resp_result);
-    auto decrypted = cipher.decrypt(
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(resp.payload.data()), resp.payload.size())
-    );
-    
-    if (!decrypted)
-    {
-        co_return std::unexpected("Decryption failed");
-    }
-    
-    std::string resp_str(decrypted->begin(), decrypted->end());
-    json::error_code jec;
-    auto parsed = json::parse(resp_str, jec);
-    
-    if (jec || !parsed.is_object())
-    {
-        co_return std::unexpected("Invalid JSON in response");
-    }
-    
-    co_return parsed.as_object();
+    co_return co_await receive_response();
 }
 
 net::awaitable<std::expected<json::object, std::string>> Client::async_send_broadcast(
@@ -395,38 +430,20 @@ net::awaitable<std::expected<json::object, std::string>> Client::async_send_broa
         co_return std::unexpected("Failed to create broadcast message");
     }
     
+    auto route_r = begin_routed_response();
+    if (!route_r)
+    {
+        co_return std::unexpected(route_r.error());
+    }
+
     auto send_r = co_await send_msg(*msg_result);
     if (!send_r)
     {
+        cancel_routed_response();
         co_return std::unexpected(send_r.error());
     }
     
-    auto resp_result = co_await read_msg(cfg.request_timeout);
-    if (!resp_result)
-    {
-        co_return std::unexpected(resp_result.error());
-    }
-    
-    auto resp = std::move(*resp_result);
-    auto decrypted = cipher.decrypt(
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(resp.payload.data()), resp.payload.size())
-    );
-    
-    if (!decrypted)
-    {
-        co_return std::unexpected("Decryption failed");
-    }
-    
-    std::string resp_str(decrypted->begin(), decrypted->end());
-    json::error_code jec;
-    auto parsed = json::parse(resp_str, jec);
-    
-    if (jec || !parsed.is_object())
-    {
-        co_return std::unexpected("Invalid JSON in response");
-    }
-    
-    co_return parsed.as_object();
+    co_return co_await receive_response();
 }
 
 net::awaitable<std::expected<void, std::string>> Client::async_logout()
@@ -456,38 +473,26 @@ net::awaitable<std::expected<void, std::string>> Client::async_logout()
         co_return std::unexpected("Failed to create logout message");
     }
     
+    auto route_r = begin_routed_response();
+    if (!route_r)
+    {
+        co_return std::unexpected(route_r.error());
+    }
+
     auto send_r = co_await send_msg(*msg_result);
     if (!send_r)
     {
+        cancel_routed_response();
         co_return send_r;
     }
     
-    auto resp_result = co_await read_msg(cfg.request_timeout);
+    auto resp_result = co_await receive_response();
     if (!resp_result)
     {
         co_return std::unexpected(resp_result.error());
     }
     
-    auto resp = std::move(*resp_result);
-    auto decrypted = cipher.decrypt(
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(resp.payload.data()), resp.payload.size())
-    );
-    
-    if (!decrypted)
-    {
-        co_return std::unexpected("Decryption failed");
-    }
-    
-    std::string resp_str(decrypted->begin(), decrypted->end());
-    json::error_code jec;
-    auto parsed = json::parse(resp_str, jec);
-    
-    if (jec || !parsed.is_object())
-    {
-        co_return std::unexpected("Invalid JSON in response");
-    }
-    
-    auto status = json_utils::extract_str(parsed.as_object(), "status");
+    auto status = json_utils::extract_str(*resp_result, "status");
     if (!status || *status != "Success")
     {
         co_return std::unexpected(std::format("Logout failed: {}", status.value_or("<missing>")));
@@ -497,78 +502,126 @@ net::awaitable<std::expected<void, std::string>> Client::async_logout()
     co_return std::expected<void, std::string>{};
 }
 
-net::awaitable<void> Client::run(
-    std::optional<std::reference_wrapper<MetricsCollector>> mts)
+net::awaitable<ClientRunResult> Client::run(
+    LoadTestWindow window, MetricsCollector& mts)
 {
-    metrics = mts;
-    
-    auto conn_r = co_await async_connect();
-    if (!conn_r)
+    try
     {
-        if (metrics) metrics->get().record_fail();
-        co_return;
-    }
-    
-    auto hs_r = co_await async_handshake();
-    if (!hs_r)
-    {
-        if (metrics) metrics->get().record_fail();
-        shutdown();
-        co_return;
-    }
-    
-    auto u = std::format("{}{}", cfg.username_prefix, cfg.user_index);
-    auto p = std::format("{}{}", cfg.password_prefix, cfg.user_index);
-    
-    auto auth_r = co_await async_auth(u, p);
-    if (!auth_r)
-    {
-        if (metrics) metrics->get().record_fail();
-        shutdown();
-        co_return;
-    }
-    
-    // Spawn read loop
-    net::co_spawn(strand,
-        [self = shared_from_this()]() -> net::awaitable<void>
+        if (stop_requested.load(std::memory_order_acquire))
         {
-            co_await self->readLoop();
-        },
-        net::detached);
-    
-    // Run send loop
-    if (metrics)
-    {
-        auto ok = co_await sendLoop(cfg, metrics->get());
-        if (!ok)
-        {
-            metrics->get().record_fail();
+            co_return ClientRunResult{ClientRunResult::Status::Cancelled, "Cancelled before connect"};
         }
+
+        auto conn_r = co_await async_connect();
+        if (!conn_r)
+        {
+            co_return ClientRunResult{
+                stop_requested.load(std::memory_order_acquire)
+                    ? ClientRunResult::Status::Cancelled
+                    : ClientRunResult::Status::Failed,
+                conn_r.error()};
+        }
+
+        auto hs_r = co_await async_handshake();
+        if (!hs_r)
+        {
+            shutdown();
+            co_return ClientRunResult{
+                stop_requested.load(std::memory_order_acquire)
+                    ? ClientRunResult::Status::Cancelled
+                    : ClientRunResult::Status::Failed,
+                hs_r.error()};
+        }
+
+        auto u = std::format("{}{}", cfg.username_prefix, cfg.user_index);
+        auto p = std::format("{}{}", cfg.password_prefix, cfg.user_index);
+
+        auto auth_r = co_await async_auth(u, p);
+        if (!auth_r)
+        {
+            shutdown();
+            co_return ClientRunResult{
+                stop_requested.load(std::memory_order_acquire)
+                    ? ClientRunResult::Status::Cancelled
+                    : ClientRunResult::Status::Failed,
+                auth_r.error()};
+        }
+
+        if (std::chrono::steady_clock::now() >= window.deadline)
+        {
+            shutdown();
+            co_return ClientRunResult{ClientRunResult::Status::Completed, {}};
+        }
+
+        reader_active = true;
+        std::ignore = co_await (readLoop() || sendLoop(window, mts));
+        reader_active = false;
+        cancel_routed_response();
+        shutdown();
+
+        if (stop_requested.load(std::memory_order_acquire))
+        {
+            co_return ClientRunResult{ClientRunResult::Status::Cancelled, "Load client cancelled"};
+        }
+        if (terminal_error)
+        {
+            co_return ClientRunResult{ClientRunResult::Status::Failed, std::move(*terminal_error)};
+        }
+        co_return ClientRunResult{ClientRunResult::Status::Completed, {}};
     }
-    
-    shutdown();
+    catch (const std::exception& e)
+    {
+        reader_active = false;
+        cancel_routed_response();
+        shutdown();
+        co_return ClientRunResult{
+            stop_requested.load(std::memory_order_acquire)
+                ? ClientRunResult::Status::Cancelled
+                : ClientRunResult::Status::Failed,
+            e.what()};
+    }
+    catch (...)
+    {
+        reader_active = false;
+        cancel_routed_response();
+        shutdown();
+        co_return ClientRunResult{
+            stop_requested.load(std::memory_order_acquire)
+                ? ClientRunResult::Status::Cancelled
+                : ClientRunResult::Status::Failed,
+            "Unknown client exception"};
+    }
 }
 
-net::awaitable<bool> Client::sendLoop(const ClientConfig& cfg, MetricsCollector& mts)
+net::awaitable<void> Client::sendLoop(
+    LoadTestWindow window, MetricsCollector& mts)
 {
     if (cfg.rate_per_sec == 0)
     {
-        co_return true;
+        load_finished = true;
+        shutdown();
+        co_return;
     }
     
     auto interval = std::chrono::microseconds(1'000'000 / cfg.rate_per_sec);
-    auto start = std::chrono::steady_clock::now();
-    auto warmup_end = start + cfg.warmup;
-    auto deadline = start + cfg.test_duration + cfg.warmup;
     std::string data(cfg.payload_size, 'x');
     
-    while (std::chrono::steady_clock::now() < deadline)
+    while (std::chrono::steady_clock::now() < window.deadline)
     {
         net::steady_timer t(strand);
-        t.expires_after(interval);
-        co_await t.async_wait(net::use_awaitable);
+        t.expires_at(std::min(std::chrono::steady_clock::now() + interval, window.deadline));
+        auto [ec] = co_await t.async_wait(net::as_tuple(net::use_awaitable));
+        if (ec)
+        {
+            co_return;
+        }
+
+        if (std::chrono::steady_clock::now() >= window.deadline)
+        {
+            break;
+        }
         
-        if (std::chrono::steady_clock::now() < warmup_end)
+        if (std::chrono::steady_clock::now() < window.warmup_end)
         {
             continue;
         }
@@ -576,40 +629,60 @@ net::awaitable<bool> Client::sendLoop(const ClientConfig& cfg, MetricsCollector&
         auto r = co_await async_send_broadcast(data);
         if (!r)
         {
-            co_return false;
+            mts.record_fail();
+            terminal_error = r.error();
+            shutdown();
+            co_return;
         }
         
         mts.record_ok();
     }
     
-    co_return true;
+    load_finished = true;
+    shutdown();
 }
 
 net::awaitable<void> Client::readLoop()
 {
     while (getState() == ClientState::Authenticated || getState() == ClientState::Established)
     {
-        auto m = co_await read_msg(cfg.request_timeout);
+        auto m = co_await read_msg();
         if (!m)
         {
-            // read_msg already called shutdown(), just exit
+            if (!stop_requested.load(std::memory_order_acquire) && !load_finished && !terminal_error)
+            {
+                terminal_error = m.error();
+            }
             co_return;
         }
-        
-        // For now, just consume. Future: demux notifications vs responses
+
+        auto routed = route_incoming(*m);
+        if (!routed)
+        {
+            terminal_error = routed.error();
+            shutdown();
+            co_return;
+        }
     }
 }
 
-net::awaitable<std::optional<Client::IoResult>> Client::readWithTimeout(
-    net::mutable_buffer buf, std::chrono::seconds timeout)
+net::awaitable<std::optional<Client::IoResult>> Client::readWithDeadline(
+    net::mutable_buffer buf,
+    std::optional<std::chrono::steady_clock::time_point> deadline)
 {
     if (getState() == ClientState::Disconnected || getState() == ClientState::Closing)
     {
         co_return std::nullopt;
     }
+
+    if (!deadline)
+    {
+        auto [ec, n] = co_await net::async_read(sock, buf, net::as_tuple(net::use_awaitable));
+        co_return IoResult{ec, n};
+    }
     
     net::steady_timer timer(strand);
-    timer.expires_after(timeout);
+    timer.expires_at(*deadline);
     
     auto readOp = [&]() -> net::awaitable<IoResult>
     {
@@ -666,11 +739,12 @@ net::awaitable<std::optional<Client::IoResult>> Client::writeWithTimeout(
     co_return std::nullopt;
 }
 
-net::awaitable<std::expected<Msg, std::string>> Client::read_msg(std::chrono::seconds timeout)
+net::awaitable<std::expected<Msg, std::string>> Client::read_msg(
+    std::optional<std::chrono::steady_clock::time_point> deadline)
 {
     std::array<std::byte, 5> hdr{};
     
-    auto hdr_result = co_await readWithTimeout(net::buffer(hdr), timeout);
+    auto hdr_result = co_await readWithDeadline(net::buffer(hdr), deadline);
     if (!hdr_result || hdr_result->ec)
     {
         shutdown();
@@ -696,9 +770,9 @@ net::awaitable<std::expected<Msg, std::string>> Client::read_msg(std::chrono::se
     
     if (body_len > 0)
     {
-        auto body_result = co_await readWithTimeout(
+        auto body_result = co_await readWithDeadline(
             net::buffer(read_buf.data() + 5, body_len), 
-            timeout);
+            deadline);
         
         if (!body_result || body_result->ec)
         {
@@ -720,6 +794,172 @@ net::awaitable<std::expected<Msg, std::string>> Client::read_msg(std::chrono::se
     }
     
     co_return *parsed;
+}
+
+std::expected<json::object, std::string> Client::decode_response(const Msg& m)
+{
+    auto decrypted = cipher.decrypt(
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(m.payload.data()), m.payload.size()));
+    if (!decrypted)
+    {
+        return std::unexpected("Decryption failed");
+    }
+
+    std::string response(decrypted->begin(), decrypted->end());
+    json::error_code ec;
+    auto parsed = json::parse(response, ec);
+    if (ec || !parsed.is_object())
+    {
+        return std::unexpected("Invalid JSON in response");
+    }
+
+    return parsed.as_object();
+}
+
+std::expected<json::object, std::string> Client::decode_notification(const Msg& m)
+{
+    auto decrypted = cipher.decrypt(
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(m.payload.data()), m.payload.size()));
+    if (!decrypted)
+    {
+        return std::unexpected("Notification decryption failed");
+    }
+
+    auto serialized = std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(decrypted->data()), decrypted->size());
+    auto notification = msg::parse(serialized);
+    if (!notification || get_semantic(notification->type) != MsgSemantic::Notify)
+    {
+        return std::unexpected("Invalid notification envelope");
+    }
+
+    std::string payload(
+        reinterpret_cast<const char*>(notification->payload.data()), notification->payload.size());
+    json::error_code ec;
+    auto parsed = json::parse(payload, ec);
+    if (ec || !parsed.is_object())
+    {
+        return std::unexpected("Invalid JSON in notification");
+    }
+
+    return parsed.as_object();
+}
+
+std::expected<bool, std::string> Client::route_incoming(const Msg& m)
+{
+    auto semantic = get_semantic(m.type);
+    if (semantic == MsgSemantic::Notify || semantic == MsgSemantic::Request)
+    {
+        auto notification = semantic == MsgSemantic::Notify
+            ? decode_response(m)
+            : decode_notification(m);
+        if (!notification)
+        {
+            return std::unexpected(notification.error());
+        }
+        if (cfg.on_notification)
+        {
+            cfg.on_notification(*notification);
+        }
+        return false;
+    }
+
+    if (semantic != MsgSemantic::Response && semantic != MsgSemantic::Error)
+    {
+        return std::unexpected("Unexpected message type after authentication");
+    }
+    if (!response_waiting)
+    {
+        return std::unexpected("Received a response without a pending request");
+    }
+
+    auto response = decode_response(m);
+    if (semantic == MsgSemantic::Error && response)
+    {
+        std::string error = "Server returned an error";
+        if (auto* message = response->if_contains("message"); message && message->is_string())
+        {
+            error = static_cast<std::string>(message->as_string());
+        }
+        response = std::unexpected(std::move(error));
+    }
+    response_result = std::move(response);
+    response_waiting = false;
+    response_timer.cancel();
+    return true;
+}
+
+std::expected<void, std::string> Client::begin_routed_response()
+{
+    if (response_waiting || response_result)
+    {
+        return std::unexpected("Another request is already waiting for a response");
+    }
+
+    response_waiting = true;
+    response_timer.expires_after(cfg.request_timeout);
+    return {};
+}
+
+void Client::cancel_routed_response() noexcept
+{
+    response_waiting = false;
+    response_result.reset();
+    boost::system::error_code ec;
+    response_timer.cancel(ec);
+}
+
+net::awaitable<std::expected<json::object, std::string>> Client::receive_response()
+{
+    if (!reader_active)
+    {
+        auto response_deadline = std::chrono::steady_clock::now() + cfg.request_timeout;
+        while (response_waiting)
+        {
+            auto message = co_await read_msg(response_deadline);
+            if (!message)
+            {
+                cancel_routed_response();
+                co_return std::unexpected(message.error());
+            }
+            auto routed = route_incoming(*message);
+            if (!routed)
+            {
+                cancel_routed_response();
+                co_return std::unexpected(routed.error());
+            }
+        }
+    }
+
+    if (response_result)
+    {
+        auto result = std::move(*response_result);
+        response_result.reset();
+        co_return result;
+    }
+    if (!response_waiting)
+    {
+        co_return std::unexpected("No routed response is pending");
+    }
+
+    auto [ec] = co_await response_timer.async_wait(net::as_tuple(net::use_awaitable));
+    if (response_result)
+    {
+        auto result = std::move(*response_result);
+        response_result.reset();
+        co_return result;
+    }
+
+    response_waiting = false;
+    if (!ec)
+    {
+        co_return std::unexpected("Request timed out waiting for response");
+    }
+    if (stop_requested.load(std::memory_order_acquire))
+    {
+        co_return std::unexpected("Request cancelled");
+    }
+    co_return std::unexpected("Response reader stopped");
 }
 
 net::awaitable<std::expected<void, std::string>> Client::send_msg(const Msg& m)
@@ -812,6 +1052,16 @@ bool Client::is_authenticated() const
     return getState() == ClientState::Authenticated;
 }
 
+void Client::request_stop()
+{
+    stop_requested.store(true, std::memory_order_release);
+    net::dispatch(strand,
+        [self = shared_from_this()]()
+        {
+            self->shutdown();
+        });
+}
+
 void Client::shutdown() noexcept
 {
     if(state.exchange(ClientState::Closing, std::memory_order_acq_rel) == ClientState::Closing)
@@ -821,6 +1071,16 @@ void Client::shutdown() noexcept
 
     clearCrypto();
     boost::system::error_code ec;
+    if (active_resolver)
+    {
+        active_resolver->cancel();
+    }
+    if (response_waiting && !response_result)
+    {
+        response_result = std::unexpected("Connection closed while waiting for response");
+        response_waiting = false;
+    }
+    response_timer.cancel(ec);
     sock.cancel(ec);
     
     {

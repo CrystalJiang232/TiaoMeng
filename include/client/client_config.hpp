@@ -20,8 +20,6 @@ struct ClientConfig
     // Load test parameters
     size_t rate_per_sec = 0;
     size_t payload_size = 256;
-    std::chrono::seconds test_duration{60};
-    std::chrono::seconds warmup{5};
     
     // User credentials (for load test)
     std::string username_prefix = "loadtest_";

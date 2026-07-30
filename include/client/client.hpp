@@ -8,6 +8,7 @@
 #include <deque>
 #include <mutex>
 #include <atomic>
+#include <memory>
 
 #include "client/client_config.hpp"
 #include "client/metrics.hpp"
@@ -27,6 +28,25 @@ enum class ClientState : uint8_t
     Established,
     Authenticated,
     Closing
+};
+
+struct LoadTestWindow
+{
+    std::chrono::steady_clock::time_point warmup_end;
+    std::chrono::steady_clock::time_point deadline;
+};
+
+struct ClientRunResult
+{
+    enum class Status : uint8_t
+    {
+        Completed,
+        Failed,
+        Cancelled
+    };
+
+    Status status = Status::Failed;
+    std::string error;
 };
 
 class Client : public std::enable_shared_from_this<Client>
@@ -60,8 +80,10 @@ public:
     [[nodiscard]] net::awaitable<std::expected<void, std::string>> async_logout();
     
     // Main loop for load test
-    [[nodiscard]] net::awaitable<void> run(
-        std::optional<std::reference_wrapper<MetricsCollector>> metrics = std::nullopt);
+    [[nodiscard]] net::awaitable<ClientRunResult> run(
+        LoadTestWindow window, MetricsCollector& metrics);
+    [[nodiscard]] net::any_io_executor get_executor() const { return strand; }
+    void request_stop();
 
     // Sync API (Phase 2)
     // WARNING: Sync API requires Client to own its io_context (default constructor).
@@ -88,13 +110,21 @@ public:
 
 private:
     // Core I/O (server pattern)
-    [[nodiscard]] net::awaitable<std::optional<IoResult>> readWithTimeout(
-        net::mutable_buffer buf, std::chrono::seconds timeout);
+    [[nodiscard]] net::awaitable<std::optional<IoResult>> readWithDeadline(
+        net::mutable_buffer buf,
+        std::optional<std::chrono::steady_clock::time_point> deadline);
     [[nodiscard]] net::awaitable<std::optional<IoResult>> writeWithTimeout(
         net::const_buffer buf, std::chrono::seconds timeout);
     
-    [[nodiscard]] net::awaitable<std::expected<Msg, std::string>> read_msg(std::chrono::seconds timeout);
+    [[nodiscard]] net::awaitable<std::expected<Msg, std::string>> read_msg(
+        std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
     [[nodiscard]] net::awaitable<std::expected<void, std::string>> send_msg(const Msg& msg);
+    [[nodiscard]] std::expected<json::object, std::string> decode_response(const Msg& msg);
+    [[nodiscard]] std::expected<json::object, std::string> decode_notification(const Msg& msg);
+    [[nodiscard]] std::expected<bool, std::string> route_incoming(const Msg& msg);
+    [[nodiscard]] std::expected<void, std::string> begin_routed_response();
+    void cancel_routed_response() noexcept;
+    [[nodiscard]] net::awaitable<std::expected<json::object, std::string>> receive_response();
     
     // Handshake steps (client-side initiator)
     [[nodiscard]] net::awaitable<std::expected<void, std::string>> handshakeStep1();
@@ -104,8 +134,8 @@ private:
     // Loops
     [[nodiscard]] net::awaitable<void> readLoop();
     [[nodiscard]] net::awaitable<void> writeLoop();
-    [[nodiscard]] net::awaitable<bool> sendLoop(
-        const ClientConfig& cfg, MetricsCollector& mts);
+    [[nodiscard]] net::awaitable<void> sendLoop(
+        LoadTestWindow window, MetricsCollector& mts);
     
     // Write queue management
     void enqueue_msg(const Msg& msg);
@@ -124,6 +154,8 @@ private:
     net::io_context& io_ctx;
     net::strand<net::any_io_executor> strand;
     tcp::socket sock;
+    net::steady_timer response_timer;
+    std::shared_ptr<tcp::resolver> active_resolver;
     
     // Crypto
     crypto::Kyber768 kem;
@@ -134,6 +166,12 @@ private:
     
     // State
     std::atomic<ClientState> state{ClientState::Disconnected};
+    std::atomic<bool> stop_requested{false};
+    bool reader_active = false;
+    bool response_waiting = false;
+    bool load_finished = false;
+    std::optional<std::expected<json::object, std::string>> response_result;
+    std::optional<std::string> terminal_error;
     
     // Buffers
     std::vector<std::byte> read_buf;
@@ -143,6 +181,4 @@ private:
     std::mutex write_mtx;
     std::atomic<bool> write_in_progress{false};
     
-    // Metrics reference (optional)
-    std::optional<std::reference_wrapper<MetricsCollector>> metrics;
 };
