@@ -219,10 +219,8 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         {
             co_return;
         }
-        else
-        {
-            co_await read_header();
-        }
+        co_await read_header();
+        co_return;
     }
 
     auto &msg = *m0;
