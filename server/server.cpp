@@ -7,6 +7,7 @@
 #include <boost/asio/signal_set.hpp>
 #include <shared_mutex>
 #include <csignal>
+#include <format>
 
 static size_t calc_cpu_threads(const Config::ServerCfg& srv)
 {
@@ -101,9 +102,10 @@ bool Server::start()
     io_pool = std::make_unique<iocore::ContextPool>(
         cfg.server().io_threads,
         cfg.server().port,
-        [this](tcp::socket sock, size_t core_id, net::io_context& io)
+        [this](tcp::socket sock, tcp::endpoint peer,
+               size_t core_id, net::io_context& io)
         {
-            create_connection(std::move(sock), core_id, io);
+            create_connection(std::move(sock), peer, core_id, io);
         }
     );
     
@@ -206,11 +208,20 @@ bool Server::is_running() const
     return running.load(std::memory_order_acquire);
 }
 
-void Server::create_connection(tcp::socket sock, size_t core_id, net::io_context& io)
+void Server::create_connection(tcp::socket sock, tcp::endpoint peer,
+                               size_t core_id, net::io_context& io)
 {
-    (void)core_id;
+    boost::system::error_code endpoint_ec;
+    auto address = peer.address().to_string(endpoint_ec);
+    if (endpoint_ec)
+    {
+        LOG_WARN("[ACCEPT] Core {} could not format peer address: {} ({})",
+                 core_id, endpoint_ec.message(), endpoint_ec.value());
+        return;
+    }
+
+    std::string id = std::format("{}:{}", address, peer.port());
     mts.inc_connections_accepted();
-    std::string id = std::format("{}", sock);
     auto conn = std::make_shared<Connection>(std::move(sock), this, id, cfg, io);
     connections.insert(std::string(conn->get_id()), conn);
     conn->start();

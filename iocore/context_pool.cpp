@@ -3,8 +3,8 @@
 #include "logger/logger.hpp"
 
 #include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
 #include <cerrno>
+#include <exception>
 #include <format>
 #include <scope>
 #include <system_error>
@@ -83,7 +83,34 @@ namespace iocore
                 auto *core_ptr = cores.back().get();
 
                 // Start accept loop
-                net::co_spawn(core_ptr->io, do_accept(core_ptr), net::detached);
+                net::co_spawn(
+                    core_ptr->io,
+                    do_accept(core_ptr),
+                    [core_id = core_ptr->core_id](std::exception_ptr error) noexcept
+                    {
+                        if (!error)
+                        {
+                            return;
+                        }
+                        try
+                        {
+                            try
+                            {
+                                std::rethrow_exception(error);
+                            }
+                            catch (const std::exception &e)
+                            {
+                                LOG_ERROR("[ACCEPT] Core {} coroutine terminated: {}", core_id, e.what());
+                            }
+                            catch (...)
+                            {
+                                LOG_ERROR("[ACCEPT] Core {} coroutine terminated with an unknown error", core_id);
+                            }
+                        }
+                        catch (...)
+                        {
+                        }
+                    });
 
                 // Start thread
                 try
@@ -169,11 +196,19 @@ namespace iocore
                 }
 
                 accept_count++;
-                auto ep = sock.remote_endpoint();
-                LOG_DEBUG("[ACCEPT] Core {} accept #{:4} from {}:{}",
-                          core->core_id, accept_count,
-                          ep.address().to_string(), ep.port());
-                factory(std::move(sock), core->core_id, core->io);
+                boost::system::error_code endpoint_ec;
+                auto endpoint = sock.remote_endpoint(endpoint_ec);
+                if (endpoint_ec)
+                {
+                    LOG_WARN("[ACCEPT] Core {} could not inspect peer for accept #{}: {} ({})",
+                             core->core_id, accept_count,
+                             endpoint_ec.message(), endpoint_ec.value());
+                    continue;
+                }
+
+                LOG_DEBUG("[ACCEPT] Core {} validated accept #{:4}",
+                          core->core_id, accept_count);
+                factory(std::move(sock), endpoint, core->core_id, core->io);
             }
         }
 

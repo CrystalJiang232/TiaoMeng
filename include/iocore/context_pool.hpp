@@ -22,7 +22,8 @@ enum class ContextPoolError
 class ContextPool
 {
 public:
-    using ConnectionFactory = std::function<void(tcp::socket, size_t core_id, net::io_context&)>;
+    using ConnectionFactory = std::function<void(
+        tcp::socket, tcp::endpoint, size_t core_id, net::io_context&)>;
     
     ContextPool(size_t n_cores, uint16_t port, ConnectionFactory factory);
     ~ContextPool();

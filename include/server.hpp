@@ -108,7 +108,8 @@ public:
     void unregister_user_session(std::string_view username, std::string_view conn_id);
 
 private:
-    void create_connection(tcp::socket sock, size_t core_id, net::io_context& io);
+    void create_connection(tcp::socket sock, tcp::endpoint peer,
+                           size_t core_id, net::io_context& io);
     void arm_shutdown_signal();
     void arm_metrics_signal();
     
@@ -238,20 +239,4 @@ public:
     std::string auth_user;
 
     friend class EventHandler;
-};
-
-
-template<>
-struct std::formatter<tcp::socket>
-{
-    constexpr auto parse(std::format_parse_context& fpc)
-    {
-        return fpc.begin();
-    }
-
-    auto format(const tcp::socket& socket,std::format_context& fc) const
-    {
-        return std::format_to(fc.out(),"{}:{}",socket.remote_endpoint().address().to_string(),
-        std::to_string(socket.remote_endpoint().port()));
-    }
 };
