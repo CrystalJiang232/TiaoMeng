@@ -18,19 +18,19 @@ class Config
 public:
     struct ServerCfg
     {
-        uint16_t port = 8080;
-        std::string bind_address = "0.0.0.0";
-        size_t max_connections = 1000;
-        size_t max_message_size = 1024 * 1024;
-        size_t io_threads = 4;
-        size_t cpu_threads = 0;
+        uint16_t    port             = 8080;
+        std::string bind_address     = "0.0.0.0";
+        size_t      max_connections  = 1000;
+        size_t      max_message_size = 1024 * 1024;
+        size_t      io_threads       = 4;
+        size_t      cpu_threads      = 0;
     };
 
     struct SecurityCfg
     {
-        size_t max_failures_before_disconnect = 5;
+        size_t               max_failures_before_disconnect = 5;
         std::chrono::seconds key_lifetime{350};
-        bool require_client_auth = false;
+        bool                 require_client_auth = false;
     };
 
     struct TimeoutsCfg
@@ -42,26 +42,50 @@ public:
 
     struct LoggingCfg
     {
-        std::string level = "info";
-        std::string file = "";
-        size_t max_size_mb = 100;
-        bool enable_console = true;
+        std::string level          = "info";
+        std::string file           = "";
+        size_t      max_size_mb    = 100;
+        bool        enable_console = true;
     };
 
-    [[nodiscard]] static std::expected<Config, std::string> load(const std::string& filepath, std::optional<uint16_t> cli_port = std::nullopt);
-    [[nodiscard]] static Config load_defaults(std::optional<uint16_t> cli_port = std::nullopt);
-    [[nodiscard]] static Config load_or_defaults(const std::string& filepath, std::optional<uint16_t> cli_port = std::nullopt);
+    [[nodiscard]]
+    static std::expected<Config, std::string> load(const std::string&      filepath,
+                                                   std::optional<uint16_t> cli_port = std::nullopt);
+    [[nodiscard]]
+    static Config load_defaults(std::optional<uint16_t> cli_port = std::nullopt);
+    [[nodiscard]]
+    static Config load_or_defaults(const std::string& filepath, std::optional<uint16_t> cli_port = std::nullopt);
 
-    [[nodiscard]] const ServerCfg& server() const { return srv; }
-    [[nodiscard]] const SecurityCfg& security() const { return sec; }
-    [[nodiscard]] const TimeoutsCfg& timeouts() const { return to; }
-    [[nodiscard]] const LoggingCfg& logging() const { return log; }
+    [[nodiscard]]
+    const ServerCfg& server() const
+    {
+        return srv;
+    }
+
+    [[nodiscard]]
+    const SecurityCfg& security() const
+    {
+        return sec;
+    }
+
+    [[nodiscard]]
+    const TimeoutsCfg& timeouts() const
+    {
+        return to;
+    }
+
+    [[nodiscard]]
+    const LoggingCfg& logging() const
+    {
+        return log;
+    }
 
 private:
-    ServerCfg srv;
+    ServerCfg   srv;
     SecurityCfg sec;
     TimeoutsCfg to;
-    LoggingCfg log;
+    LoggingCfg  log;
 
-    [[nodiscard]] static std::expected<Config, std::string> parse(const json::value& jv);
+    [[nodiscard]]
+    static std::expected<Config, std::string> parse(const json::value& jv);
 };

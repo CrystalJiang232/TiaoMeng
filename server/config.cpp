@@ -4,53 +4,53 @@
 #include <sstream>
 #include <format>
 
-namespace {
-
-template<std::unsigned_integral Ty>
-std::expected<Ty, std::string> get_uint(const json::object& obj, std::string_view key,
-                                        Ty min_val, Ty max_val, Ty default_val)
+namespace
 {
-    auto it = obj.find(key);
-    if (it == obj.end())
-    {
-        return default_val;
-    }
-    if (!it->value().is_int64() && !it->value().is_uint64())
-    {
-        return std::unexpected(std::format("'{}' must be an integer", key));
-    }
-    if (it->value().is_int64() && it->value().get_int64() < 0)
-    {
-        return std::unexpected(std::format("'{}' cannot be negative", key));
-    }
-    auto val = it->value().to_number<uint64_t>();
-    if (val < static_cast<uint64_t>(min_val) || val > static_cast<uint64_t>(max_val))
-    {
-        return std::unexpected(std::format("'{}' must be between {} and {}",
-                                           key, min_val, max_val));
-    }
-    return static_cast<Ty>(val);
-}
 
-std::string get_string(const json::object& obj, std::string_view key, std::string_view default_val)
-{
-    auto it = obj.find(key);
-    if (it == obj.end() || !it->value().is_string())
+    template <std::unsigned_integral Ty>
+    std::expected<Ty, std::string> get_uint(const json::object& obj, std::string_view key, Ty min_val, Ty max_val,
+                                            Ty default_val)
     {
-        return std::string(default_val);
+        auto it = obj.find(key);
+        if (it == obj.end())
+        {
+            return default_val;
+        }
+        if (!it->value().is_int64() && !it->value().is_uint64())
+        {
+            return std::unexpected(std::format("'{}' must be an integer", key));
+        }
+        if (it->value().is_int64() && it->value().get_int64() < 0)
+        {
+            return std::unexpected(std::format("'{}' cannot be negative", key));
+        }
+        auto val = it->value().to_number<uint64_t>();
+        if (val < static_cast<uint64_t>(min_val) || val > static_cast<uint64_t>(max_val))
+        {
+            return std::unexpected(std::format("'{}' must be between {} and {}", key, min_val, max_val));
+        }
+        return static_cast<Ty>(val);
     }
-    return std::string(it->value().as_string());
-}
 
-bool get_bool(const json::object& obj, std::string_view key, bool default_val)
-{
-    auto it = obj.find(key);
-    if (it == obj.end() || !it->value().is_bool())
+    std::string get_string(const json::object& obj, std::string_view key, std::string_view default_val)
     {
-        return default_val;
+        auto it = obj.find(key);
+        if (it == obj.end() || !it->value().is_string())
+        {
+            return std::string(default_val);
+        }
+        return std::string(it->value().as_string());
     }
-    return it->value().as_bool();
-}
+
+    bool get_bool(const json::object& obj, std::string_view key, bool default_val)
+    {
+        auto it = obj.find(key);
+        if (it == obj.end() || !it->value().is_bool())
+        {
+            return default_val;
+        }
+        return it->value().as_bool();
+    }
 
 } // namespace
 
@@ -107,7 +107,7 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
         return std::unexpected("Config root must be a JSON object");
     }
     const auto& root = jv.as_object();
-    Config config;
+    Config      config;
     if (auto it = root.find("server"); it != root.end() && it->value().is_object())
     {
         const auto& srv = it->value().as_object();
@@ -204,9 +204,9 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
     }
     if (auto it = root.find("logging"); it != root.end() && it->value().is_object())
     {
-        const auto& log = it->value().as_object();
+        const auto& log  = it->value().as_object();
         config.log.level = get_string(log, "level", "info");
-        config.log.file = get_string(log, "file", "");
+        config.log.file  = get_string(log, "file", "");
         if (auto max_size = get_uint<size_t>(log, "max_size_mb", 1, 10000, 100); max_size)
         {
             config.log.max_size_mb = *max_size;

@@ -19,7 +19,10 @@ namespace iocore
     {
     public:
         Impl(size_t n_cores, uint16_t port, ConnectionFactory factory)
-            : n_cores(n_cores), port(port), factory(std::move(factory)), running(false)
+            : n_cores(n_cores)
+            , port(port)
+            , factory(std::move(factory))
+            , running(false)
         {
             cores.reserve(n_cores);
         }
@@ -31,13 +34,16 @@ namespace iocore
                 return std::unexpected(ContextPoolError::AlreadyStarted);
             }
 
-            auto ep = tcp::endpoint(net::ip::address_v4::any(), port);
-            auto rollback = std::scope_exit([this]()
-                                            { stop_cores(true); });
+            auto ep       = tcp::endpoint(net::ip::address_v4::any(), port);
+            auto rollback = std::scope_exit(
+                [this]()
+                {
+                    stop_cores(true);
+                });
 
             for (size_t i = 0; i < n_cores; ++i)
             {
-                auto core = std::make_unique<CoreContext>();
+                auto core     = std::make_unique<CoreContext>();
                 core->core_id = i;
 
                 // Setup acceptor with SO_REUSEPORT on Linux
@@ -56,7 +62,7 @@ namespace iocore
                 }
 
 #ifdef HAS_SO_REUSEPORT
-                int fd = core->acc.native_handle();
+                int fd  = core->acc.native_handle();
                 int opt = 1;
                 if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) != 0)
                 {
@@ -80,48 +86,49 @@ namespace iocore
                 }
 
                 cores.push_back(std::move(core));
-                auto *core_ptr = cores.back().get();
+                auto* core_ptr = cores.back().get();
 
                 // Start accept loop
-                net::co_spawn(
-                    core_ptr->io,
-                    do_accept(core_ptr),
-                    [core_id = core_ptr->core_id](std::exception_ptr error) noexcept
-                    {
-                        if (!error)
-                        {
-                            return;
-                        }
-                        try
-                        {
-                            try
-                            {
-                                std::rethrow_exception(error);
-                            }
-                            catch (const std::exception &e)
-                            {
-                                LOG_ERROR("[ACCEPT] Core {} coroutine terminated: {}", core_id, e.what());
-                            }
-                            catch (...)
-                            {
-                                LOG_ERROR("[ACCEPT] Core {} coroutine terminated with an unknown error", core_id);
-                            }
-                        }
-                        catch (...)
-                        {
-                        }
-                    });
+                net::co_spawn(core_ptr->io, do_accept(core_ptr),
+                              [core_id = core_ptr->core_id](std::exception_ptr error) noexcept
+                              {
+                                  if (!error)
+                                  {
+                                      return;
+                                  }
+                                  try
+                                  {
+                                      try
+                                      {
+                                          std::rethrow_exception(error);
+                                      }
+                                      catch (const std::exception& e)
+                                      {
+                                          LOG_ERROR("[ACCEPT] Core {} coroutine terminated: {}", core_id, e.what());
+                                      }
+                                      catch (...)
+                                      {
+                                          LOG_ERROR("[ACCEPT] Core {} coroutine terminated with an unknown error",
+                                                    core_id);
+                                      }
+                                  }
+                                  catch (...)
+                                  {
+                                  }
+                              });
 
                 // Start thread
                 try
                 {
-                    core_ptr->thd = std::jthread([core_ptr, i]()
-                                                 {
-                    platform::set_thread_name(std::format("io_core_{}", i).c_str());
-                    platform::pin_to_core(i);
-                    core_ptr->io.run(); });
+                    core_ptr->thd = std::jthread(
+                        [core_ptr, i]()
+                        {
+                            platform::set_thread_name(std::format("io_core_{}", i).c_str());
+                            platform::pin_to_core(i);
+                            core_ptr->io.run();
+                        });
                 }
-                catch (const std::system_error &e)
+                catch (const std::system_error& e)
                 {
                     LOG_ERROR("Failed to create thread for core {}: {}", i, e.what());
                     return std::unexpected(ContextPoolError::ThreadCreateFailed);
@@ -136,7 +143,7 @@ namespace iocore
 
         void stop_cores(bool clear_cores)
         {
-            for (auto &core : cores)
+            for (auto& core : cores)
             {
                 boost::system::error_code ec;
                 core->acc.cancel(ec);
@@ -144,9 +151,9 @@ namespace iocore
                 core->io.stop();
             }
 
-            auto this_id = std::this_thread::get_id();
+            auto this_id            = std::this_thread::get_id();
             bool called_from_worker = false;
-            for (auto &core : cores)
+            for (auto& core : cores)
             {
                 if (!core->thd.joinable())
                 {
@@ -178,7 +185,7 @@ namespace iocore
             LOG_INFO("ContextPool stopped");
         }
 
-        net::awaitable<void> do_accept(CoreContext *core)
+        net::awaitable<void> do_accept(CoreContext* core)
         {
             size_t accept_count = 0;
             while (true)
@@ -197,25 +204,23 @@ namespace iocore
 
                 accept_count++;
                 boost::system::error_code endpoint_ec;
-                auto endpoint = sock.remote_endpoint(endpoint_ec);
+                auto                      endpoint = sock.remote_endpoint(endpoint_ec);
                 if (endpoint_ec)
                 {
-                    LOG_WARN("[ACCEPT] Core {} could not inspect peer for accept #{}: {} ({})",
-                             core->core_id, accept_count,
-                             endpoint_ec.message(), endpoint_ec.value());
+                    LOG_WARN("[ACCEPT] Core {} could not inspect peer for accept #{}: {} ({})", core->core_id,
+                             accept_count, endpoint_ec.message(), endpoint_ec.value());
                     continue;
                 }
 
-                LOG_DEBUG("[ACCEPT] Core {} validated accept #{:4}",
-                          core->core_id, accept_count);
+                LOG_DEBUG("[ACCEPT] Core {} validated accept #{:4}", core->core_id, accept_count);
                 factory(std::move(sock), endpoint, core->core_id, core->io);
             }
         }
 
-        size_t n_cores;
-        uint16_t port;
-        ConnectionFactory factory;
-        std::atomic<bool> running;
+        size_t                                    n_cores;
+        uint16_t                                  port;
+        ConnectionFactory                         factory;
+        std::atomic<bool>                         running;
         std::vector<std::unique_ptr<CoreContext>> cores;
     };
 
@@ -249,7 +254,7 @@ namespace iocore
         return impl->n_cores;
     }
 
-    net::io_context &ContextPool::get_context(size_t core_id)
+    net::io_context& ContextPool::get_context(size_t core_id)
     {
         return impl->cores[core_id]->io;
     }

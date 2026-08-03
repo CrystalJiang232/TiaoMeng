@@ -17,8 +17,17 @@ using json_utils::status_msg;
 
 // C++ 'fundamentals' - initialization sequence is as per variable DECLARED sequence, not as per initializer sequence in ctor definition
 // It's vital to align latter to former to prevent unexpected schematic-based error(or '-Wreorder')
-Connection::Connection(tcp::socket sock, Server *srv, std::string conn_id, const Config &config, net::io_context &io)
-    : strand(net::make_strand(io)), socket(std::move(sock)), server(srv), id(std::move(conn_id)), state(ConnState::Connected), cached_state(std::nullopt), write_in_progress(false), fail_tracker(config.security().max_failures_before_disconnect), cfg(config), sess(config.security().key_lifetime)
+Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const Config& config, net::io_context& io)
+    : strand(net::make_strand(io))
+    , socket(std::move(sock))
+    , server(srv)
+    , id(std::move(conn_id))
+    , state(ConnState::Connected)
+    , cached_state(std::nullopt)
+    , write_in_progress(false)
+    , fail_tracker(config.security().max_failures_before_disconnect)
+    , cfg(config)
+    , sess(config.security().key_lifetime)
 {
     LOG_INFO("Connection established with id = {}", id);
 }
@@ -48,16 +57,19 @@ Connection::~Connection() noexcept
 void Connection::start()
 {
     LOG_DEBUG("Connection {} start() called", id);
-    net::co_spawn(strand, [self = shared_from_this()]() -> net::awaitable<void>
-                  {
+    net::co_spawn(
+        strand,
+        [self = shared_from_this()]() -> net::awaitable<void>
+        {
             LOG_DEBUG("Connection {} read_header coroutine started", self->id);
-            co_await self->read_header(); }, net::detached);
+            co_await self->read_header();
+        },
+        net::detached);
     LOG_DEBUG("Connection {} start() co_spawn returned", id);
 }
 
-net::awaitable<std::optional<Connection::IoResult>> Connection::read_with_timeout(
-    net::mutable_buffer buf,
-    std::chrono::seconds timeout)
+net::awaitable<std::optional<Connection::IoResult>> Connection::read_with_timeout(net::mutable_buffer  buf,
+                                                                                  std::chrono::seconds timeout)
 {
     if (is_closing())
     {
@@ -91,9 +103,8 @@ net::awaitable<std::optional<Connection::IoResult>> Connection::read_with_timeou
     co_return std::nullopt;
 }
 
-net::awaitable<std::optional<Connection::IoResult>> Connection::write_with_timeout(
-    const Msg &msg,
-    std::chrono::seconds timeout)
+net::awaitable<std::optional<Connection::IoResult>> Connection::write_with_timeout(const Msg&           msg,
+                                                                                   std::chrono::seconds timeout)
 {
     if (is_closing())
     {
@@ -138,9 +149,7 @@ net::awaitable<void> Connection::read_header()
     LOG_DEBUG("Connection {} read_header waiting for 4 bytes", id);
     read_buf.resize(4);
 
-    auto result = co_await read_with_timeout(
-        net::buffer(read_buf, 4),
-        cfg.timeouts().read_timeout);
+    auto result = co_await read_with_timeout(net::buffer(read_buf, 4), cfg.timeouts().read_timeout);
 
     if (!result)
     {
@@ -150,9 +159,7 @@ net::awaitable<void> Connection::read_header()
 
     if (auto e = result->ec)
     {
-        if (e == net::error::eof ||
-            e == net::error::connection_reset ||
-            e == net::error::broken_pipe)
+        if (e == net::error::eof || e == net::error::connection_reset || e == net::error::broken_pipe)
         {
             // Pipe broken, disconnect immediately
             close(CloseMode::Immediate);
@@ -184,9 +191,7 @@ net::awaitable<void> Connection::read_body(uint32_t len)
 
     read_buf.resize(len);
 
-    auto result = co_await read_with_timeout(
-        net::buffer(read_buf.data() + 4, len - 4),
-        cfg.timeouts().read_timeout);
+    auto result = co_await read_with_timeout(net::buffer(read_buf.data() + 4, len - 4), cfg.timeouts().read_timeout);
 
     if (!result)
     {
@@ -223,231 +228,98 @@ net::awaitable<void> Connection::read_body(uint32_t len)
         co_return;
     }
 
-    auto &msg = *m0;
-    auto semantic = get_semantic(msg.type);
-    bool encrypted = is_encrypted(msg.type);
-    LOG_DEBUG("Connection {} received message: type={}, semantic={}, encrypted={}, payload_size={}",
-              id, static_cast<int>(msg.type), std::to_underlying(semantic), encrypted, msg.payload.size());
+    auto& msg       = *m0;
+    auto  semantic  = get_semantic(msg.type);
+    bool  encrypted = is_encrypted(msg.type);
+    LOG_DEBUG("Connection {} received message: type={}, semantic={}, encrypted={}, payload_size={}", id,
+              static_cast<int>(msg.type), std::to_underlying(semantic), encrypted, msg.payload.size());
 
     // Connection state verification
     switch (auto st = state.load(std::memory_order_acquire))
     {
-    case ConnState::Connected:
-        [[fallthrough]];
-    case ConnState::Handshaking:
-        [[fallthrough]];
-    case ConnState::Rekeying:
-        if (encrypted)
-        {
-            error_and_close("Encrypted messages not allowed during handshake");
-            co_return;
-        }
-        if (semantic != MsgSemantic::Handshake)
-        {
-            error_and_close("Only Handshake semantic allowed during handshake");
-            co_return;
-        }
-        break;
-
-    case ConnState::Established:
-        [[fallthrough]];
-    case ConnState::Authenticated:
-        if (!encrypted)
-        {
-            if (send_error("Plaintext messages not allowed after handshake"))
+        case ConnState::Connected:
+            [[fallthrough]];
+        case ConnState::Handshaking:
+            [[fallthrough]];
+        case ConnState::Rekeying:
+            if (encrypted)
             {
+                error_and_close("Encrypted messages not allowed during handshake");
                 co_return;
             }
-        }
-        break;
+            if (semantic != MsgSemantic::Handshake)
+            {
+                error_and_close("Only Handshake semantic allowed during handshake");
+                co_return;
+            }
+            break;
 
-    case ConnState::Closing:
-        co_return;
+        case ConnState::Established:
+            [[fallthrough]];
+        case ConnState::Authenticated:
+            if (!encrypted)
+            {
+                if (send_error("Plaintext messages not allowed after handshake"))
+                {
+                    co_return;
+                }
+            }
+            break;
 
-    default:
-        error_and_close("Invalid state occur!"); // TCP Analogy: RST
-        LOG_ERROR("Invalid state occur @ {}: state = {}", get_id(), std::to_underlying(st));
-        co_return;
+        case ConnState::Closing:
+            co_return;
+
+        default:
+            error_and_close("Invalid state occur!"); // TCP Analogy: RST
+            LOG_ERROR("Invalid state occur @ {}: state = {}", get_id(), std::to_underlying(st));
+            co_return;
     }
 
     switch (semantic)
     {
-    case MsgSemantic::Handshake:
-        co_await handle_handshake(msg);
-        break;
+        case MsgSemantic::Handshake:
+            co_await handle_handshake(msg);
+            break;
 
-    case MsgSemantic::Request:
-        co_await handle_encrypted(msg);
-        break;
+        case MsgSemantic::Request:
+            co_await handle_encrypted(msg);
+            break;
 
-    case MsgSemantic::Session:
-        std::ignore = send_error("Session management not implemented");
-        co_return;
+        case MsgSemantic::Session:
+            std::ignore = send_error("Session management not implemented");
+            co_return;
 
-    case MsgSemantic::Control:
-        [[fallthrough]];
-    case MsgSemantic::Response:
-        [[fallthrough]];
-    case MsgSemantic::Notify:
-        [[fallthrough]];
-    case MsgSemantic::Error:
-        error_and_close("Invalid message direction: Server-to-client semantic received from client");
-        co_return;
-    default:
-        error_and_close(std::format("Invalid message semantic {}", std::to_underlying(semantic)));
-        co_return;
+        case MsgSemantic::Control:
+            [[fallthrough]];
+        case MsgSemantic::Response:
+            [[fallthrough]];
+        case MsgSemantic::Notify:
+            [[fallthrough]];
+        case MsgSemantic::Error:
+            error_and_close("Invalid message direction: Server-to-client semantic received from client");
+            co_return;
+        default:
+            error_and_close(std::format("Invalid message semantic {}", std::to_underlying(semantic)));
+            co_return;
     }
 
     LOG_DEBUG("Connection {} read_body completed, restarting read_header", id);
     co_await read_header();
 }
 
-net::awaitable<void> Connection::handle_handshake(const Msg &msg)
+net::awaitable<void> Connection::handle_handshake(const Msg& msg)
 {
     switch (state.load(std::memory_order_acquire))
     {
-    case ConnState::Connected:
-    {
-        if (msg.payload.size() != Kyber768::public_key_size)
+        case ConnState::Connected:
         {
-            send_raw_error(std::format("Invalid client public key size: expected {}, got {}",
-                                       Kyber768::public_key_size, msg.payload.size()));
-            co_return;
-        }
+            if (msg.payload.size() != Kyber768::public_key_size)
+            {
+                send_raw_error(std::format("Invalid client public key size: expected {}, got {}",
+                                           Kyber768::public_key_size, msg.payload.size()));
+                co_return;
+            }
 
-        auto kp_result = kem.generate_keypair();
-        if (!kp_result)
-        {
-            if (server)
-                server->metrics().inc_handshakes_failed();
-            send_raw_error("Failed to generate keypair");
-            co_return;
-        }
-        kp = std::move(*kp_result);
-
-        std::span<const uint8_t> cpk(
-            reinterpret_cast<const uint8_t *>(msg.payload.data()),
-            Kyber768::public_key_size);
-
-        auto encap_result = kem.encapsulate(cpk);
-        if (!encap_result)
-        {
-            if (server)
-                server->metrics().inc_handshakes_failed();
-            send_raw_error("Failed to encapsulate to client public key");
-            co_return;
-        }
-        ss_A = std::move(encap_result->shared_secret);
-
-        std::vector<uint8_t> payload;
-        payload.reserve(Kyber768::public_key_size + Kyber768::ciphertext_size);
-
-        std::ranges::copy(kp->public_key, std::back_inserter(payload));
-        std::ranges::copy(encap_result->ciphertext, std::back_inserter(payload));
-
-        auto send_result = msg::make(to_bytes<uint8_t>(payload), plaintext_handshake);
-        LOG_DEBUG("Connection {} msg::make success={}", id, send_result.has_value());
-        if (!send_result)
-        {
-            send_raw_error(std::format("Failed to create handshake message, errc = {}", std::to_underlying(send_result.error())));
-            co_return;
-        }
-        LOG_DEBUG("Connection {} calling send() with handshake response", id);
-        send(*send_result);
-        LOG_DEBUG("Connection {} send() returned", id);
-
-        client_pk = cpk | std::ranges::to<Kyber768::key_t>();
-        state.store(ConnState::Handshaking, std::memory_order_release);
-        LOG_DEBUG("Connection {} handshake state changed to Handshaking", id);
-        break;
-    }
-
-    case ConnState::Handshaking:
-    {
-        if (msg.payload.size() < Kyber768::ciphertext_size)
-        {
-            send_raw_error(std::format("Invalid handshake payload size: expected at least {}, got {}",
-                                       Kyber768::ciphertext_size, msg.payload.size()));
-            co_return;
-        }
-
-        std::span<const uint8_t> cct(
-            reinterpret_cast<const uint8_t *>(msg.payload.data()),
-            Kyber768::ciphertext_size);
-
-        auto decap_result = kem.decapsulate(cct, kp->secret_key);
-        if (!decap_result)
-        {
-            if (server)
-                server->metrics().inc_handshakes_failed();
-            send_raw_error("Failed to decapsulate client ciphertext");
-            co_return;
-        }
-        ss_local = std::move(*decap_result);
-
-        auto encap_result = kem.encapsulate(*client_pk);
-        if (!encap_result)
-        {
-            if (server)
-                server->metrics().inc_handshakes_failed();
-            send_raw_error("Failed to encapsulate to client public key");
-            co_return;
-        }
-        ss_remote = std::move(encap_result->shared_secret);
-
-        sess.complete_handshake(
-            std::span<const uint8_t>(ss_local->data(), ss_local->size()),
-            std::span<const uint8_t>(ss_A->data(), ss_A->size()));
-
-        auto response = status_msg("ConnectionReady", "Secure channel established, please authenticate");
-
-        auto plaintext = json::serialize(response) | std::views::transform([](char c)
-                                                                           { return static_cast<uint8_t>(c); }) |
-                         std::ranges::to<std::vector<uint8_t>>();
-
-        auto encrypted = sess.encrypt(plaintext);
-        if (!encrypted)
-        {
-            LOG_ERROR("Failed to encrypt handshake response");
-            error_and_close("Failed to encrypt handshake response");
-            co_return;
-        }
-
-        auto payload = *encrypted | std::views::transform(int2byte) | std::ranges::to<Msg::payload_t>();
-
-        auto send_result = msg::make(payload, encrypted_response);
-        if (!send_result)
-        {
-            LOG_ERROR("Failed to create encrypted response message");
-            error_and_close("Failed to create encrypted response message");
-            co_return;
-        }
-        send(*send_result);
-
-        kp->secret_key.clear();
-        kp->secret_key.shrink_to_fit();
-        ss_A.reset();
-        client_pk.reset();
-
-        state.store(ConnState::Established, std::memory_order_release);
-        LOG_INFO("Secure session established with {}", id);
-        if (server)
-        {
-            server->metrics().inc_handshakes_completed();
-        }
-        break;
-    }
-
-    case ConnState::Established:
-        [[fallthrough]];
-    case ConnState::Authenticated:
-        std::ignore = send_error("Handshake already completed");
-        co_return;
-
-    case ConnState::Rekeying:
-    {
-        if (msg.payload.size() == Kyber768::public_key_size)
-        {
             auto kp_result = kem.generate_keypair();
             if (!kp_result)
             {
@@ -458,18 +330,13 @@ net::awaitable<void> Connection::handle_handshake(const Msg &msg)
             }
             kp = std::move(*kp_result);
 
-            std::span<const uint8_t> cpk(
-                reinterpret_cast<const uint8_t *>(msg.payload.data()),
-                Kyber768::public_key_size);
+            std::span<const uint8_t> cpk(reinterpret_cast<const uint8_t*>(msg.payload.data()), Kyber768::public_key_size);
 
             auto encap_result = kem.encapsulate(cpk);
             if (!encap_result)
             {
                 if (server)
-                {
                     server->metrics().inc_handshakes_failed();
-                }
-
                 send_raw_error("Failed to encapsulate to client public key");
                 co_return;
             }
@@ -482,20 +349,33 @@ net::awaitable<void> Connection::handle_handshake(const Msg &msg)
             std::ranges::copy(encap_result->ciphertext, std::back_inserter(payload));
 
             auto send_result = msg::make(to_bytes<uint8_t>(payload), plaintext_handshake);
+            LOG_DEBUG("Connection {} msg::make success={}", id, send_result.has_value());
             if (!send_result)
             {
-                send_raw_error(std::format("Failed to create handshake message, errc = {}", std::to_underlying(send_result.error())));
+                send_raw_error(std::format("Failed to create handshake message, errc = {}",
+                                           std::to_underlying(send_result.error())));
                 co_return;
             }
+            LOG_DEBUG("Connection {} calling send() with handshake response", id);
             send(*send_result);
+            LOG_DEBUG("Connection {} send() returned", id);
 
             client_pk = cpk | std::ranges::to<Kyber768::key_t>();
+            state.store(ConnState::Handshaking, std::memory_order_release);
+            LOG_DEBUG("Connection {} handshake state changed to Handshaking", id);
+            break;
         }
-        else if (msg.payload.size() >= Kyber768::ciphertext_size)
+
+        case ConnState::Handshaking:
         {
-            std::span<const uint8_t> cct(
-                reinterpret_cast<const uint8_t *>(msg.payload.data()),
-                Kyber768::ciphertext_size);
+            if (msg.payload.size() < Kyber768::ciphertext_size)
+            {
+                send_raw_error(std::format("Invalid handshake payload size: expected at least {}, got {}",
+                                           Kyber768::ciphertext_size, msg.payload.size()));
+                co_return;
+            }
+
+            std::span<const uint8_t> cct(reinterpret_cast<const uint8_t*>(msg.payload.data()), Kyber768::ciphertext_size);
 
             auto decap_result = kem.decapsulate(cct, kp->secret_key);
             if (!decap_result)
@@ -517,21 +397,24 @@ net::awaitable<void> Connection::handle_handshake(const Msg &msg)
             }
             ss_remote = std::move(encap_result->shared_secret);
 
-            sess.complete_handshake(
-                std::span<const uint8_t>(ss_local->data(), ss_local->size()),
-                std::span<const uint8_t>(ss_A->data(), ss_A->size()));
+            sess.complete_handshake(std::span<const uint8_t>(ss_local->data(), ss_local->size()),
+                                    std::span<const uint8_t>(ss_A->data(), ss_A->size()));
 
-            auto response = status_msg("RekeyComplete", "Secure channel re-established");
+            auto response = status_msg("ConnectionReady", "Secure channel established, please authenticate");
 
-            auto plaintext = json::serialize(response) | std::views::transform([](char c)
-                                                                               { return static_cast<uint8_t>(c); }) |
+            auto plaintext = json::serialize(response) |
+                             std::views::transform(
+                                 [](char c)
+                                 {
+                                     return static_cast<uint8_t>(c);
+                                 }) |
                              std::ranges::to<std::vector<uint8_t>>();
 
             auto encrypted = sess.encrypt(plaintext);
             if (!encrypted)
             {
-                LOG_ERROR("Failed to encrypt rekey response");
-                error_and_close("Failed to encrypt rekey response");
+                LOG_ERROR("Failed to encrypt handshake response");
+                error_and_close("Failed to encrypt handshake response");
                 co_return;
             }
 
@@ -551,29 +434,153 @@ net::awaitable<void> Connection::handle_handshake(const Msg &msg)
             ss_A.reset();
             client_pk.reset();
 
-            restore_cached_state();
-            LOG_INFO("Secure session re-established with {}", id);
+            state.store(ConnState::Established, std::memory_order_release);
+            LOG_INFO("Secure session established with {}", id);
             if (server)
             {
                 server->metrics().inc_handshakes_completed();
             }
+            break;
         }
-        else
-        {
-            send_raw_error(std::format("Invalid rekey payload size: expected {} or at least {}, got {}",
-                                       Kyber768::public_key_size, Kyber768::ciphertext_size, msg.payload.size()));
+
+        case ConnState::Established:
+            [[fallthrough]];
+        case ConnState::Authenticated:
+            std::ignore = send_error("Handshake already completed");
             co_return;
+
+        case ConnState::Rekeying:
+        {
+            if (msg.payload.size() == Kyber768::public_key_size)
+            {
+                auto kp_result = kem.generate_keypair();
+                if (!kp_result)
+                {
+                    if (server)
+                        server->metrics().inc_handshakes_failed();
+                    send_raw_error("Failed to generate keypair");
+                    co_return;
+                }
+                kp = std::move(*kp_result);
+
+                std::span<const uint8_t> cpk(reinterpret_cast<const uint8_t*>(msg.payload.data()),
+                                             Kyber768::public_key_size);
+
+                auto encap_result = kem.encapsulate(cpk);
+                if (!encap_result)
+                {
+                    if (server)
+                    {
+                        server->metrics().inc_handshakes_failed();
+                    }
+
+                    send_raw_error("Failed to encapsulate to client public key");
+                    co_return;
+                }
+                ss_A = std::move(encap_result->shared_secret);
+
+                std::vector<uint8_t> payload;
+                payload.reserve(Kyber768::public_key_size + Kyber768::ciphertext_size);
+
+                std::ranges::copy(kp->public_key, std::back_inserter(payload));
+                std::ranges::copy(encap_result->ciphertext, std::back_inserter(payload));
+
+                auto send_result = msg::make(to_bytes<uint8_t>(payload), plaintext_handshake);
+                if (!send_result)
+                {
+                    send_raw_error(std::format("Failed to create handshake message, errc = {}",
+                                               std::to_underlying(send_result.error())));
+                    co_return;
+                }
+                send(*send_result);
+
+                client_pk = cpk | std::ranges::to<Kyber768::key_t>();
+            }
+            else if (msg.payload.size() >= Kyber768::ciphertext_size)
+            {
+                std::span<const uint8_t> cct(reinterpret_cast<const uint8_t*>(msg.payload.data()),
+                                             Kyber768::ciphertext_size);
+
+                auto decap_result = kem.decapsulate(cct, kp->secret_key);
+                if (!decap_result)
+                {
+                    if (server)
+                        server->metrics().inc_handshakes_failed();
+                    send_raw_error("Failed to decapsulate client ciphertext");
+                    co_return;
+                }
+                ss_local = std::move(*decap_result);
+
+                auto encap_result = kem.encapsulate(*client_pk);
+                if (!encap_result)
+                {
+                    if (server)
+                        server->metrics().inc_handshakes_failed();
+                    send_raw_error("Failed to encapsulate to client public key");
+                    co_return;
+                }
+                ss_remote = std::move(encap_result->shared_secret);
+
+                sess.complete_handshake(std::span<const uint8_t>(ss_local->data(), ss_local->size()),
+                                        std::span<const uint8_t>(ss_A->data(), ss_A->size()));
+
+                auto response = status_msg("RekeyComplete", "Secure channel re-established");
+
+                auto plaintext = json::serialize(response) |
+                                 std::views::transform(
+                                     [](char c)
+                                     {
+                                         return static_cast<uint8_t>(c);
+                                     }) |
+                                 std::ranges::to<std::vector<uint8_t>>();
+
+                auto encrypted = sess.encrypt(plaintext);
+                if (!encrypted)
+                {
+                    LOG_ERROR("Failed to encrypt rekey response");
+                    error_and_close("Failed to encrypt rekey response");
+                    co_return;
+                }
+
+                auto payload = *encrypted | std::views::transform(int2byte) | std::ranges::to<Msg::payload_t>();
+
+                auto send_result = msg::make(payload, encrypted_response);
+                if (!send_result)
+                {
+                    LOG_ERROR("Failed to create encrypted response message");
+                    error_and_close("Failed to create encrypted response message");
+                    co_return;
+                }
+                send(*send_result);
+
+                kp->secret_key.clear();
+                kp->secret_key.shrink_to_fit();
+                ss_A.reset();
+                client_pk.reset();
+
+                restore_cached_state();
+                LOG_INFO("Secure session re-established with {}", id);
+                if (server)
+                {
+                    server->metrics().inc_handshakes_completed();
+                }
+            }
+            else
+            {
+                send_raw_error(std::format("Invalid rekey payload size: expected {} or at least {}, got {}",
+                                           Kyber768::public_key_size, Kyber768::ciphertext_size, msg.payload.size()));
+                co_return;
+            }
+            break;
         }
-        break;
-    }
 
-    case ConnState::Closing:
-        co_return;
+        case ConnState::Closing:
+            co_return;
 
-    default:
-        LOG_ERROR("Invalid state for handshake for id = {}", get_id());
-        error_and_close("Invalid state for handshake");
-        co_return;
+        default:
+            LOG_ERROR("Invalid state for handshake for id = {}", get_id());
+            error_and_close("Invalid state for handshake");
+            co_return;
     }
 }
 
@@ -584,7 +591,7 @@ void Connection::cache_and_set_rekeying()
     state.store(ConnState::Rekeying, std::memory_order_release);
 }
 
-net::awaitable<void> Connection::handle_encrypted(const Msg &msg)
+net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 {
     if (!sess.is_established())
     {
@@ -599,7 +606,8 @@ net::awaitable<void> Connection::handle_encrypted(const Msg &msg)
         co_return;
     }
 
-    auto ct = msg.payload | std::views::transform(std::to_underlying<std::byte>) | std::ranges::to<std::vector<uint8_t>>();
+    auto ct =
+        msg.payload | std::views::transform(std::to_underlying<std::byte>) | std::ranges::to<std::vector<uint8_t>>();
 
     auto decrypted = sess.decrypt(ct);
     if (!decrypted)
@@ -619,7 +627,7 @@ net::awaitable<void> Connection::handle_encrypted(const Msg &msg)
     }
 
     json::error_code ec;
-    auto parsed = json::parse(json_str, ec);
+    auto             parsed = json::parse(json_str, ec);
     if (ec)
     {
         std::ignore = send_error("Invalid JSON");
@@ -635,7 +643,7 @@ net::awaitable<void> Connection::handle_encrypted(const Msg &msg)
     co_await handle_request(parsed.as_object());
 }
 
-net::awaitable<void> Connection::handle_request(const json::object &request)
+net::awaitable<void> Connection::handle_request(const json::object& request)
 {
     if (is_closing())
     {
@@ -647,7 +655,7 @@ net::awaitable<void> Connection::handle_request(const json::object &request)
     co_return;
 }
 
-void Connection::send(const Msg &msg)
+void Connection::send(const Msg& msg)
 {
     if (is_closing())
     {
@@ -665,7 +673,8 @@ void Connection::send(const Msg &msg)
                       bool should_spawn = false;
                       {
                           std::lock_guard lock(write_mtx);
-                          LOG_DEBUG("Connection {} dispatch lambda acquired write_mtx, queue_size={}", id, write_queue.size());
+                          LOG_DEBUG("Connection {} dispatch lambda acquired write_mtx, queue_size={}", id,
+                                    write_queue.size());
                           bool was_empty = write_queue.empty();
                           write_queue.push_back(msg);
 
@@ -679,11 +688,15 @@ void Connection::send(const Msg &msg)
                       if (should_spawn)
                       {
                           LOG_DEBUG("Connection {} spawning write coroutine", id);
-                          net::co_spawn(strand, [this, self]() -> net::awaitable<void>
-                                        {
-                        LOG_DEBUG("Connection {} write coroutine started", self->id);
-                        co_await write();
-                        LOG_DEBUG("Connection {} write coroutine exited", self->id); }, net::detached);
+                          net::co_spawn(
+                              strand,
+                              [this, self]() -> net::awaitable<void>
+                              {
+                                  LOG_DEBUG("Connection {} write coroutine started", self->id);
+                                  co_await write();
+                                  LOG_DEBUG("Connection {} write coroutine exited", self->id);
+                              },
+                              net::detached);
                       }
                       else
                       {
@@ -692,16 +705,20 @@ void Connection::send(const Msg &msg)
                   });
 }
 
-void Connection::send_encrypted(const json::object &json_obj, MsgType type)
+void Connection::send_encrypted(const json::object& json_obj, MsgType type)
 {
     if (!sess.is_established())
     {
         return;
     }
 
-    auto json_str = json::serialize(json_obj);
-    auto plaintext = json_str | std::views::transform([](char c)
-                                                      { return static_cast<uint8_t>(c); }) |
+    auto json_str  = json::serialize(json_obj);
+    auto plaintext = json_str |
+                     std::views::transform(
+                         [](char c)
+                         {
+                             return static_cast<uint8_t>(c);
+                         }) |
                      std::ranges::to<std::vector<uint8_t>>();
 
     auto encrypted = sess.encrypt(plaintext);
@@ -721,14 +738,15 @@ void Connection::send_encrypted(const json::object &json_obj, MsgType type)
     send(*enc_msg);
 }
 
-void Connection::send_encrypted(const Msg &msg)
+void Connection::send_encrypted(const Msg& msg)
 {
     if (!sess.is_established())
     {
         return;
     }
 
-    auto plaintext = msg::serialize(msg) | std::views::transform(std::to_underlying<std::byte>) | std::ranges::to<std::vector<uint8_t>>();
+    auto plaintext = msg::serialize(msg) | std::views::transform(std::to_underlying<std::byte>) |
+                     std::ranges::to<std::vector<uint8_t>>();
 
     auto encrypted = sess.encrypt(plaintext);
     if (!encrypted)
@@ -825,13 +843,13 @@ net::awaitable<void> Connection::close_async(CloseMode mode)
 {
     switch (mode)
     {
-    case CloseMode::Graceful:
-        co_await write();
-        break;
+        case CloseMode::Graceful:
+            co_await write();
+            break;
 
-    case CloseMode::Immediate:
-        shutdown();
-        break;
+        case CloseMode::Immediate:
+            shutdown();
+            break;
     }
 
     server->remove_connection(id);
@@ -849,11 +867,15 @@ void Connection::close(CloseMode mode)
     }
 
     // Only one closing coroutine should be spawned
-    net::co_spawn(strand, [self = shared_from_this(), mode]() -> net::awaitable<void>
-                  {
+    net::co_spawn(
+        strand,
+        [self = shared_from_this(), mode]() -> net::awaitable<void>
+        {
             LOG_DEBUG("Connection {} close coroutine starting", self->id);
             co_await self->close_async(mode);
-            LOG_DEBUG("Connection {} close coroutine completed", self->id); }, net::detached);
+            LOG_DEBUG("Connection {} close coroutine completed", self->id);
+        },
+        net::detached);
 }
 
 // Defaults to force close

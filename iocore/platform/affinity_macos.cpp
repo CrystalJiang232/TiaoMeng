@@ -6,15 +6,15 @@
 namespace iocore::platform
 {
 
-void pin_to_core(size_t)
-{
-    // macOS does not support thread affinity pinning
-    // Quality of Service is used instead
-}
+    void pin_to_core(size_t)
+    {
+        // macOS does not support thread affinity pinning
+        // Quality of Service is used instead
+    }
 
-void set_thread_name(const char* name)
-{
-    pthread_setname_np(name);
-}
+    void set_thread_name(const char* name)
+    {
+        pthread_setname_np(name);
+    }
 
 } // namespace iocore::platform

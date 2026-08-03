@@ -2,5 +2,5 @@
 
 void ServerMetrics::print() const
 {
-    std::println("{}",*this);
+    std::println("{}", *this);
 }

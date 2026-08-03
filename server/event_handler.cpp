@@ -7,16 +7,16 @@
 namespace json = boost::json;
 using namespace json_utils;
 
-EventHandler::EventHandler() : hdls{
-                                   {"auth", handle_auth},
-                                   {"command", handle_command},
-                                   {"broadcast", handle_broadcast},
-                                   {"logout", handle_logout},
-                                   {"rekey", handle_rekey}}
+EventHandler::EventHandler()
+    : hdls{{"auth", handle_auth},
+           {"command", handle_command},
+           {"broadcast", handle_broadcast},
+           {"logout", handle_logout},
+           {"rekey", handle_rekey}}
 {
 }
 
-void EventHandler::route(std::shared_ptr<Connection> conn, const json::object &request)
+void EventHandler::route(std::shared_ptr<Connection> conn, const json::object& request)
 {
     LOG_DEBUG("[EVT] {} route() ENTER", conn->get_id());
 
@@ -63,7 +63,7 @@ void EventHandler::route(std::shared_ptr<Connection> conn, const json::object &r
     LOG_DEBUG("[EVT] {} route() EXIT", conn->get_id());
 }
 
-void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::object &request)
+void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::object& request)
 {
     LOG_DEBUG("[EVT] {} handle_auth ENTER", self->get_id());
 
@@ -86,7 +86,9 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
     if (auto ret = json_utils::extract_str(request, "username"); !ret)
     {
         if (self->server)
+        {
             self->server->metrics().inc_authentications_failed();
+        }
         std::ignore = self->send_error("Authentication failed");
         LOG_DEBUG("[EVT] {} handle_auth EXIT: no username", self->get_id());
         return;
@@ -110,19 +112,24 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
     }
 
     LOG_DEBUG("[EVT] {} handle_auth starting verify...", self->get_id());
-    net::io_context auth_io;
+    net::io_context               auth_io;
     auth::AuthManager::AuthResult auth_result{false, false};
 
-    net::co_spawn(auth_io, [&]() -> net::awaitable<void>
-                  {
+    net::co_spawn(
+        auth_io,
+        [&]() -> net::awaitable<void>
+        {
             LOG_DEBUG("[EVT] {} handle_auth verify coro START", self->get_id());
             auth_result = co_await self->server->auth().verify(username, password);
-            LOG_DEBUG("[EVT] {} handle_auth verify coro DONE", self->get_id()); }, net::detached);
+            LOG_DEBUG("[EVT] {} handle_auth verify coro DONE", self->get_id());
+        },
+        net::detached);
 
     LOG_DEBUG("[EVT] {} handle_auth auth_io.run() START", self->get_id());
     auth_io.run();
     LOG_DEBUG("[EVT] {} handle_auth auth_io.run() DONE", self->get_id());
-    LOG_DEBUG("[EVT] {} handle_auth got result: locked={} success={}", self->get_id(), auth_result.locked, auth_result.success);
+    LOG_DEBUG("[EVT] {} handle_auth got result: locked={} success={}", self->get_id(), auth_result.locked,
+              auth_result.success);
 
     if (auth_result.locked)
     {
@@ -157,7 +164,7 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
     LOG_DEBUG("[EVT] {} handle_auth EXIT", self->get_id());
 }
 
-void EventHandler::handle_command(std::shared_ptr<Connection> self, const json::object &request)
+void EventHandler::handle_command(std::shared_ptr<Connection> self, const json::object& request)
 {
     std::ignore = request;
     LOG_DEBUG("[EVT] {} handle_command ENTER", self->get_id());
@@ -175,7 +182,7 @@ void EventHandler::handle_command(std::shared_ptr<Connection> self, const json::
     LOG_DEBUG("[EVT] {} handle_command EXIT", self->get_id());
 }
 
-void EventHandler::handle_broadcast(std::shared_ptr<Connection> self, const json::object &request)
+void EventHandler::handle_broadcast(std::shared_ptr<Connection> self, const json::object& request)
 {
     LOG_DEBUG("[EVT] {} handle_broadcast ENTER", self->get_id());
 
@@ -191,8 +198,13 @@ void EventHandler::handle_broadcast(std::shared_ptr<Connection> self, const json
     self->send_encrypted(status_msg("Success", "Broadcast request processed"));
 
     LOG_DEBUG("[EVT] {} handle_broadcast creating msg...", self->get_id());
-    auto json_payload = json::serialize(json::object{{"From", self->get_id()}, {"msg", json_utils::extract_str(request, "msg").value_or("")}}) | std::views::transform([](auto &&ch)
-                                                                                                                                                                       { return static_cast<std::byte>(ch); }) |
+    auto json_payload = json::serialize(json::object{{"From", self->get_id()},
+                                                     {"msg", json_utils::extract_str(request, "msg").value_or("")}}) |
+                        std::views::transform(
+                            [](auto&& ch)
+                            {
+                                return static_cast<std::byte>(ch);
+                            }) |
                         std::ranges::to<Msg::payload_t>();
 
     auto m = msg::make(json_payload, encrypted_notify);
@@ -208,7 +220,7 @@ void EventHandler::handle_broadcast(std::shared_ptr<Connection> self, const json
     LOG_DEBUG("[EVT] {} handle_broadcast EXIT", self->get_id());
 }
 
-void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::object &request)
+void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::object& request)
 {
     std::ignore = request; //...
     LOG_DEBUG("[EVT] {} handle_logout ENTER", self->get_id());
@@ -217,8 +229,9 @@ void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::o
     {
         LOG_DEBUG("[EVT] {} handle_logout clearing session...", self->get_id());
         self->setstate(ConnState::Established);
-        std::ignore = self->server->auth().db().clear_conn_id_if_matches(self->get_auth_user(), self->get_id()); // Server-side
-        self->clear_auth_user();                                                                                 // Connection-side
+        std::ignore =
+            self->server->auth().db().clear_conn_id_if_matches(self->get_auth_user(), self->get_id()); // Server-side
+        self->clear_auth_user();                                                                       // Connection-side
         self->reset_failures();
         self->send_encrypted(status_msg("Success", "Logged out successfully"));
         LOG_INFO("Client {} logged out", self->get_id());
@@ -232,7 +245,7 @@ void EventHandler::handle_logout(std::shared_ptr<Connection> self, const json::o
     }
 }
 
-void EventHandler::handle_rekey(std::shared_ptr<Connection> self, const json::object &request)
+void EventHandler::handle_rekey(std::shared_ptr<Connection> self, const json::object& request)
 {
     std::ignore = request;
     LOG_DEBUG("[EVT] {} handle_rekey ENTER", self->get_id());

@@ -36,12 +36,12 @@
 #include "iocore/context_pool.hpp"
 
 namespace net = boost::asio;
-using tcp = net::ip::tcp;
+using tcp     = net::ip::tcp;
 
 class Connection;
 class Server;
 
-enum class ConnState: uint8_t
+enum class ConnState : uint8_t
 {
     Connected,
     Handshaking,
@@ -53,10 +53,10 @@ enum class ConnState: uint8_t
 
 enum class RequestAction : uint8_t
 {
-    Auth = 0x01,
-    Command = 0x02,
+    Auth      = 0x01,
+    Command   = 0x02,
     Broadcast = 0x03,
-    Logout = 0x04,
+    Logout    = 0x04,
 };
 
 class ConnectionsMap
@@ -64,12 +64,15 @@ class ConnectionsMap
 public:
     void insert(std::string id, std::shared_ptr<Connection> conn);
     void erase(std::string_view id);
-    [[nodiscard]] std::shared_ptr<Connection> find(std::string_view id) const;
-    [[nodiscard]] std::vector<std::shared_ptr<Connection>> snapshot() const;
-    [[nodiscard]] size_t size() const;
+    [[nodiscard]]
+    std::shared_ptr<Connection> find(std::string_view id) const;
+    [[nodiscard]]
+    std::vector<std::shared_ptr<Connection>> snapshot() const;
+    [[nodiscard]]
+    size_t size() const;
 
 private:
-    mutable std::shared_mutex mtx;
+    mutable std::shared_mutex                                    mtx;
     std::unordered_map<std::string, std::shared_ptr<Connection>> conns;
 };
 
@@ -78,54 +81,92 @@ class Server
 public:
     explicit Server(const Config& config);
     ~Server();
-    
-    Server(const Server&) = delete;
+
+    Server(const Server&)            = delete;
     Server& operator=(const Server&) = delete;
-    
-    [[nodiscard]] bool start();
+
+    [[nodiscard]]
+    bool start();
     void stop();
-    [[nodiscard]] bool is_running() const;
-    
+    [[nodiscard]]
+    bool is_running() const;
+
     void remove_connection(std::string_view id);
     void broadcast(const Msg& msg, std::string_view exclude_id = "");
 
-    [[nodiscard]] bool validate_conn(std::string_view username, std::string_view conn_id);
-    
-    [[nodiscard]] ThreadPool& cpu_pool() { return tp; }
-    [[nodiscard]] const ThreadPool& cpu_pool() const { return tp; }
-    
-    [[nodiscard]] auth::AuthManager& auth() { return *auth_mgr; }
-    [[nodiscard]] const auth::AuthManager& auth() const { return *auth_mgr; }
-    [[nodiscard]] bool has_auth() const { return auth_mgr.has_value(); }
-    
-    [[nodiscard]] ServerMetrics& metrics() { return mts; }
-    [[nodiscard]] const ServerMetrics& metrics() const { return mts; }
+    [[nodiscard]]
+    bool validate_conn(std::string_view username, std::string_view conn_id);
 
-    [[nodiscard]] size_t connection_count() const { return connections.size(); }
-    
+    [[nodiscard]]
+    ThreadPool& cpu_pool()
+    {
+        return tp;
+    }
+
+    [[nodiscard]]
+    const ThreadPool& cpu_pool() const
+    {
+        return tp;
+    }
+
+    [[nodiscard]]
+    auth::AuthManager& auth()
+    {
+        return *auth_mgr;
+    }
+
+    [[nodiscard]]
+    const auth::AuthManager& auth() const
+    {
+        return *auth_mgr;
+    }
+
+    [[nodiscard]]
+    bool has_auth() const
+    {
+        return auth_mgr.has_value();
+    }
+
+    [[nodiscard]]
+    ServerMetrics& metrics()
+    {
+        return mts;
+    }
+
+    [[nodiscard]]
+    const ServerMetrics& metrics() const
+    {
+        return mts;
+    }
+
+    [[nodiscard]]
+    size_t connection_count() const
+    {
+        return connections.size();
+    }
+
     void kick_connection(std::string_view conn_id, std::string_view reason);
     void register_user_session(std::string_view username, std::string_view conn_id);
     void unregister_user_session(std::string_view username, std::string_view conn_id);
 
 private:
-    void create_connection(tcp::socket sock, tcp::endpoint peer,
-                           size_t core_id, net::io_context& io);
+    void create_connection(tcp::socket sock, tcp::endpoint peer, size_t core_id, net::io_context& io);
     void arm_shutdown_signal();
     void arm_metrics_signal();
-    
-    const Config& cfg;
-    ServerMetrics mts;
-    ThreadPool tp;
-    std::optional<auth::AuthManager> auth_mgr;
-    ConnectionsMap connections;
+
+    const Config&                        cfg;
+    ServerMetrics                        mts;
+    ThreadPool                           tp;
+    std::optional<auth::AuthManager>     auth_mgr;
+    ConnectionsMap                       connections;
     std::unique_ptr<iocore::ContextPool> io_pool;
-    std::atomic<bool> running{false};
-    
+    std::atomic<bool>                    running{false};
+
     std::optional<net::signal_set> signals;
     std::optional<net::signal_set> metrics_signals;
 };
 
-class Connection : public std::enable_shared_from_this<Connection>
+class Connection: public std::enable_shared_from_this<Connection>
 {
 public:
     enum class CloseMode
@@ -133,22 +174,33 @@ public:
         Graceful,
         Immediate
     };
-    
+
     struct FailureTracker
     {
-        const size_t max_failures = 5;
+        const size_t        max_failures = 5;
         std::atomic<size_t> count{0};
-        
-        explicit FailureTracker(size_t max_fail = 5) : max_failures(max_fail) {}
-        
+
+        explicit FailureTracker(size_t max_fail = 5)
+            : max_failures(max_fail)
+        {
+        }
+
         [[nodiscard("record() returns whether count has exceeded max failure after pre self-increment.")]]
         bool record()
         {
             return count.fetch_add(1, std::memory_order_acq_rel) + 1 >= max_failures;
         }
 
-        void reset() { count.store(0, std::memory_order_release); }
-        [[nodiscard]] bool threshold_exceeded() const { return count.load(std::memory_order_acquire) >= max_failures; }
+        void reset()
+        {
+            count.store(0, std::memory_order_release);
+        }
+
+        [[nodiscard]]
+        bool threshold_exceeded() const
+        {
+            return count.load(std::memory_order_acquire) >= max_failures;
+        }
     };
 
     Connection(tcp::socket, Server*, std::string, const Config& config, net::io_context& io);
@@ -157,28 +209,81 @@ public:
     void send(const Msg& msg);
     void send_encrypted(const boost::json::object& json_obj, MsgType type = encrypted_response);
     void send_encrypted(const Msg& msg);
-    [[nodiscard]] std::string_view get_id() const { return id; }
-    [[nodiscard]] ConnState getstate() const { return state.load(std::memory_order_acquire); }
-    void setstate(ConnState newstate) { state.store(newstate, std::memory_order_release); }
+
+    [[nodiscard]]
+    std::string_view get_id() const
+    {
+        return id;
+    }
+
+    [[nodiscard]]
+    ConnState getstate() const
+    {
+        return state.load(std::memory_order_acquire);
+    }
+
+    void setstate(ConnState newstate)
+    {
+        state.store(newstate, std::memory_order_release);
+    }
 
     void close(CloseMode mode = CloseMode::Graceful);
-    
-    [[nodiscard]] bool is_closing() const {return this->state.load(std::memory_order_acquire) == ConnState::Closing;}
+
+    [[nodiscard]]
+    bool is_closing() const
+    {
+        return this->state.load(std::memory_order_acquire) == ConnState::Closing;
+    }
 
     void shutdown() noexcept;
-    
-    [[nodiscard]] bool has_session_key() const { return sess.is_established(); }
-    [[nodiscard]] std::span<const uint8_t> session_key() const { return sess.key(); }
-    [[nodiscard]] bool is_authenticated() const { return state.load(std::memory_order_acquire) == ConnState::Authenticated; }
-    [[nodiscard]] std::string_view get_auth_user() const { return auth_user; }
-    void set_auth_user(std::string_view user) { auth_user = std::string(user); }
-    void clear_auth_user() { auth_user.clear(); }
-    
-    bool record_failure() { return fail_tracker.record(); }
-    void reset_failures() { fail_tracker.reset(); }
+
+    [[nodiscard]]
+    bool has_session_key() const
+    {
+        return sess.is_established();
+    }
+
+    [[nodiscard]]
+    std::span<const uint8_t> session_key() const
+    {
+        return sess.key();
+    }
+
+    [[nodiscard]]
+    bool is_authenticated() const
+    {
+        return state.load(std::memory_order_acquire) == ConnState::Authenticated;
+    }
+
+    [[nodiscard]]
+    std::string_view get_auth_user() const
+    {
+        return auth_user;
+    }
+
+    void set_auth_user(std::string_view user)
+    {
+        auth_user = std::string(user);
+    }
+
+    void clear_auth_user()
+    {
+        auth_user.clear();
+    }
+
+    bool record_failure()
+    {
+        return fail_tracker.record();
+    }
+
+    void reset_failures()
+    {
+        fail_tracker.reset();
+    }
 
     void send_raw_error(std::string_view err, CloseMode mode = CloseMode::Graceful);
-    [[nodiscard("Do not discard send_error's value: caller is responsible for co_return upon this function returning true to prevent connection leakage. Use std::ignore or void cast for explicit schematics.")]]
+    [[nodiscard("Do not discard send_error's value: caller is responsible for co_return upon this function returning "
+                "true to prevent connection leakage. Use std::ignore or void cast for explicit schematics.")]]
     bool send_error(std::string_view err, CloseMode mode = CloseMode::Graceful, bool force_close = false);
     void error_and_close(std::string_view err_text);
 
@@ -186,30 +291,30 @@ private:
     struct IoResult
     {
         boost::system::error_code ec;
-        size_t bytes = 0;
+        size_t                    bytes = 0;
     };
-    
+
     net::awaitable<void> read_header();
     net::awaitable<void> read_body(uint32_t len);
     net::awaitable<void> write();
     net::awaitable<void> close_async(CloseMode mode = CloseMode::Graceful);
-    
+
     net::awaitable<std::optional<IoResult>> read_with_timeout(net::mutable_buffer buf, std::chrono::seconds timeout);
     net::awaitable<std::optional<IoResult>> write_with_timeout(const Msg& msg, std::chrono::seconds timeout);
-    
+
     net::awaitable<void> handle_handshake(const Msg& msg);
     net::awaitable<void> handle_encrypted(const Msg& msg);
     net::awaitable<void> handle_request(const boost::json::object& request);
-    void cache_and_set_rekeying();
-    
+    void                 cache_and_set_rekeying();
+
     EventHandler evt_hdl;
-    
-    crypto::Kyber768 kem;
-    std::optional<crypto::Kyber768::keypair_t> kp;
+
+    crypto::Kyber768                                 kem;
+    std::optional<crypto::Kyber768::keypair_t>       kp;
     std::optional<crypto::Kyber768::shared_secret_t> ss_local;
     std::optional<crypto::Kyber768::shared_secret_t> ss_remote;
-    crypto::SessionKey sess;
-    
+    crypto::SessionKey                               sess;
+
 public:
     void restore_cached_state()
     {
@@ -219,24 +324,25 @@ public:
             cached_state.reset();
         }
     }
-    std::optional<crypto::Kyber768::key_t> client_pk;
+
+    std::optional<crypto::Kyber768::key_t>           client_pk;
     std::optional<crypto::Kyber768::shared_secret_t> ss_A;
 
     net::strand<net::any_io_executor> strand;
-    tcp::socket socket;
-    Server* server;
-    std::string id;
-    std::vector<std::byte> read_buf;
-    std::vector<std::byte> write_buf;
-    mutable std::mutex write_mtx;
-    std::deque<Msg> write_queue;
+    tcp::socket                       socket;
+    Server*                           server;
+    std::string                       id;
+    std::vector<std::byte>            read_buf;
+    std::vector<std::byte>            write_buf;
+    mutable std::mutex                write_mtx;
+    std::deque<Msg>                   write_queue;
 
-    std::atomic<ConnState> state;
+    std::atomic<ConnState>   state;
     std::optional<ConnState> cached_state;
-    std::atomic<bool> write_in_progress{false};
-    FailureTracker fail_tracker;
-    const Config& cfg;
-    std::string auth_user;
+    std::atomic<bool>        write_in_progress{false};
+    FailureTracker           fail_tracker;
+    const Config&            cfg;
+    std::string              auth_user;
 
     friend class EventHandler;
 };

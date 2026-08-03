@@ -6,7 +6,11 @@ ThreadPool::ThreadPool(size_t n_threads)
 {
     for (auto& t : workers)
     {
-        t = std::jthread([this] {pool_ctx.run();});
+        t = std::jthread(
+            [this]
+            {
+                pool_ctx.run();
+            });
     }
 }
 
@@ -17,15 +21,15 @@ ThreadPool::~ThreadPool()
 
 void ThreadPool::stop()
 {
-    
+
     if (bool was_running = running.exchange(false); !was_running)
     {
         return;
     }
-    
+
     work_guard.reset();
     pool_ctx.stop();
-    
+
     for (auto& t : workers)
     {
         if (t.joinable())

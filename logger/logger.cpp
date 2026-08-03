@@ -12,11 +12,20 @@ Logger::State& Logger::instance()
 
 Logger::Level Logger::parse_level(std::string_view lvl)
 {
-    std::string lstr = lvl | std::views::transform([](auto c) -> char{return std::tolower(c);}) | std::ranges::to<std::string>();
+    std::string lstr = lvl |
+                       std::views::transform(
+                           [](auto c) -> char
+                           {
+                               return std::tolower(c);
+                           }) |
+                       std::ranges::to<std::string>();
 
-    if (lstr == "debug") return Level::Debug;
-    if (lstr == "warn" || lstr == "warning") return Level::Warn;
-    if (lstr == "error") return Level::Error;
+    if (lstr == "debug")
+        return Level::Debug;
+    if (lstr == "warn" || lstr == "warning")
+        return Level::Warn;
+    if (lstr == "error")
+        return Level::Error;
     return Level::Info;
 }
 
@@ -24,34 +33,34 @@ std::string Logger::level_str(Level l)
 {
     switch (l)
     {
-        case Level::Debug: return "DEBUG";
-        case Level::Warn:  return "WARN";
-        case Level::Error: return "ERROR";
-        default:           return "INFO";
+        case Level::Debug:
+            return "DEBUG";
+        case Level::Warn:
+            return "WARN";
+        case Level::Error:
+            return "ERROR";
+        default:
+            return "INFO";
     }
 }
 
 std::string Logger::timestamp()
 {
-    auto now = std::chrono::system_clock::now();
-    auto time = std::chrono::system_clock::to_time_t(now);
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()) % 1000;
+    auto    now  = std::chrono::system_clock::now();
+    auto    time = std::chrono::system_clock::to_time_t(now);
+    auto    ms   = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
     std::tm tm;
     localtime_r(&time, &tm);
-    return std::format("{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}",
-                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+    return std::format("{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                        tm.tm_hour, tm.tm_min, tm.tm_sec, ms.count());
 }
 
-std::expected<void, std::string> Logger::init(std::string_view level,
-                                               std::string_view file,
-                                               size_t max_size_mb,
-                                               bool enable_console)
+std::expected<void, std::string> Logger::init(std::string_view level, std::string_view file, size_t max_size_mb,
+                                              bool enable_console)
 {
-    State& s = instance();
-    s.lvl = parse_level(level);
-    s.console = enable_console;
+    State& s   = instance();
+    s.lvl      = parse_level(level);
+    s.console  = enable_console;
     s.max_size = max_size_mb * 1024 * 1024;
     s.filename = std::string(file);
     if (!s.filename.empty())
@@ -67,16 +76,16 @@ std::expected<void, std::string> Logger::init(std::string_view level,
 
 void Logger::shutdown()
 {
-    State& s = instance();
+    State&                      s = instance();
     std::lock_guard<std::mutex> lock(s.mtx);
     s.file.close();
 }
 
 void Logger::log_msg(Level l, const std::string& msg)
 {
-    State& s = instance();
+    State&                      s = instance();
     std::lock_guard<std::mutex> lock(s.mtx);
-    std::string line = std::format("[{}] [{}] {}", timestamp(), level_str(l), msg);
+    std::string                 line = std::format("[{}] [{}] {}", timestamp(), level_str(l), msg);
     if (s.console)
     {
         auto& out = (l == Level::Error) ? std::cerr : std::cout;
