@@ -1,0 +1,24 @@
+# Global filters
+*.md
+*.py*
+*.txt
+*.log
+*.out
+*.bak*
+*.sh
+*.bundle
+
+core.*
+auth.db*
+
+# temporary, builders
+tmp/
+/build/
+
+# Workspace specific
+/.vscode/
+
+
+# Exemptions
+!/README.md
+!CMakeLists.txt
