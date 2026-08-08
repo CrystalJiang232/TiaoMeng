@@ -28,27 +28,29 @@ TEST_CASE("Config::load parses valid JSON configuration file")
         std::ofstream f(test_file);
         f << R"({
             "server": {
-                "port": 7777,
-                "bind_address": "127.0.0.1",
-                "max_connections": 500,
-                "max_message_size": 2048
-            },
-            "security": {
-                "max_failures_before_disconnect": 3,
-                "session_timeout_sec": 1800,
-                "key_rotation_interval_sec": 43200,
-                "require_client_auth": true
-            },
-            "timeouts": {
-                "handshake_timeout_sec": 15,
-                "read_timeout_sec": 60,
-                "write_timeout_sec": 10
-            },
-            "logging": {
-                "level": "debug",
-                "file": "/var/log/test.log",
-                "max_size_mb": 50,
-                "enable_console": false
+                "connection": {
+                    "port": 7777,
+                    "bind_address": "127.0.0.1",
+                    "max_connections": 500,
+                    "max_message_size": 2048
+                },
+                "security": {
+                    "max_failures_before_disconnect": 3,
+                    "session_timeout_sec": 1800,
+                    "key_rotation_interval_sec": 43200,
+                    "require_client_auth": true
+                },
+                "timeouts": {
+                    "handshake_timeout_sec": 15,
+                    "read_timeout_sec": 60,
+                    "write_timeout_sec": 10
+                },
+                "logging": {
+                    "level": "debug",
+                    "file": "/var/log/test.log",
+                    "max_size_mb": 50,
+                    "enable_console": false
+                }
             }
         })";
     }
@@ -97,7 +99,7 @@ TEST_CASE("Config::load returns error for port number out of valid range")
 
     {
         std::ofstream f(test_file);
-        f << R"({"server": {"port": 99999}})";
+        f << R"({"server": {"connection": {"port": 99999}}})";
     }
 
     auto result = Config::load(test_file);
@@ -112,7 +114,7 @@ TEST_CASE("Config::load returns error for negative timeout values")
 
     {
         std::ofstream f(test_file);
-        f << R"({"timeouts": {"read_timeout_sec": -10}})";
+        f << R"({"server": {"timeouts": {"read_timeout_sec": -10}}})";
     }
 
     auto result = Config::load(test_file);
@@ -135,7 +137,7 @@ TEST_CASE("Config::load applies default values for missing configuration section
 
     {
         std::ofstream f(test_file);
-        f << R"({"server": {"port": 6000}})";
+        f << R"({"server": {"connection": {"port": 6000}}})";
     }
 
     auto result = Config::load(test_file);
@@ -173,7 +175,7 @@ TEST_CASE("Config::load_or_defaults CLI port parameter overrides file configurat
 
     {
         std::ofstream f(test_file);
-        f << R"({"server": {"port": 9000}})";
+        f << R"({"server": {"connection": {"port": 9000}}})";
     }
 
     auto cfg = Config::load_or_defaults(test_file, static_cast<uint16_t>(7777));
@@ -189,7 +191,7 @@ TEST_CASE("Config::load validates io_threads does not exceed hardware limits")
 
     {
         std::ofstream f(test_file);
-        f << R"({"server": {"io_threads": 256}})";
+        f << R"({"server": {"connection": {"io_threads": 256}}})";
     }
 
     auto result = Config::load(test_file);

@@ -108,9 +108,37 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
     }
     const auto& root = jv.as_object();
     Config      config;
+
+    // New layout: all sections are nested under the top-level "server" object:
+    //   server.connection / server.security / server.timeouts / server.logging.
+    // Missing sections or sub-objects fall back to defaults (existing lenient behavior).
+    const json::object* srv_section = nullptr;
+    const json::object* sec_section = nullptr;
+    const json::object* to_section  = nullptr;
+    const json::object* log_section = nullptr;
     if (auto it = root.find("server"); it != root.end() && it->value().is_object())
     {
-        const auto& srv = it->value().as_object();
+        const auto& server_obj = it->value().as_object();
+        if (auto sub = server_obj.find("connection"); sub != server_obj.end() && sub->value().is_object())
+        {
+            srv_section = &sub->value().as_object();
+        }
+        if (auto sub = server_obj.find("security"); sub != server_obj.end() && sub->value().is_object())
+        {
+            sec_section = &sub->value().as_object();
+        }
+        if (auto sub = server_obj.find("timeouts"); sub != server_obj.end() && sub->value().is_object())
+        {
+            to_section = &sub->value().as_object();
+        }
+        if (auto sub = server_obj.find("logging"); sub != server_obj.end() && sub->value().is_object())
+        {
+            log_section = &sub->value().as_object();
+        }
+    }
+    if (srv_section)
+    {
+        const auto& srv = *srv_section;
         if (auto port = get_uint<uint16_t>(srv, "port", 1, 65535, 8080); port)
         {
             config.srv.port = *port;
@@ -153,9 +181,9 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
             return std::unexpected(io_t.error());
         }
     }
-    if (auto it = root.find("security"); it != root.end() && it->value().is_object())
+    if (sec_section)
     {
-        const auto& sec = it->value().as_object();
+        const auto& sec = *sec_section;
         if (auto max_fail = get_uint<size_t>(sec, "max_failures_before_disconnect", 1, 100, 5); max_fail)
         {
             config.sec.max_failures_before_disconnect = *max_fail;
@@ -174,9 +202,9 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
         }
         config.sec.require_client_auth = get_bool(sec, "require_client_auth", true);
     }
-    if (auto it = root.find("timeouts"); it != root.end() && it->value().is_object())
+    if (to_section)
     {
-        const auto& to = it->value().as_object();
+        const auto& to = *to_section;
         if (auto hs_to = get_uint<uint64_t>(to, "handshake_timeout_sec", 1, 300, 30); hs_to)
         {
             config.to.handshake_timeout = std::chrono::seconds(*hs_to);
@@ -202,9 +230,9 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
             return std::unexpected(write_to.error());
         }
     }
-    if (auto it = root.find("logging"); it != root.end() && it->value().is_object())
+    if (log_section)
     {
-        const auto& log  = it->value().as_object();
+        const auto& log = *log_section;
         config.log.level = get_string(log, "level", "info");
         config.log.file  = get_string(log, "file", "");
         if (auto max_size = get_uint<size_t>(log, "max_size_mb", 1, 10000, 100); max_size)

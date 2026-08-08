@@ -28,7 +28,7 @@ int main(int argc, char** argv)
         }
     }
 
-    auto config = Config::load_or_defaults("server_config.json", cli_port);
+    auto config = Config::load_or_defaults("config.json", cli_port);
 
     auto log_cfg = config.logging();
     if (auto result = Logger::init(log_cfg.level, log_cfg.file, log_cfg.max_size_mb, log_cfg.enable_console); !result)

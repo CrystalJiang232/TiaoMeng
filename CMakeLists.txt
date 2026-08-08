@@ -55,7 +55,7 @@ find_package(Threads REQUIRED)
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
-file(COPY "${CMAKE_SOURCE_DIR}/server_config.json" DESTINATION "${CMAKE_SOURCE_DIR}/bin")
+file(COPY "${CMAKE_SOURCE_DIR}/config.json" DESTINATION "${CMAKE_SOURCE_DIR}/bin")
 
 add_subdirectory(fundamentals)
 add_subdirectory(crypto)
