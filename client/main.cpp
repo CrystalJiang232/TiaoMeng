@@ -265,7 +265,7 @@ std::expected<void, std::string> setup_test_users(const LoadTestConfig& cfg)
     {
         auto u   = std::format("{}{}", cfg.username_prefix, i);
         auto p   = std::format("{}{}", cfg.password_prefix, i);
-        auto cmd = std::format("./build/bin/user_admin add {} {}", u, p);
+        auto cmd = std::format("./bin/user_admin add {} {}", u, p);
 
         if (std::system(cmd.c_str()) != 0)
         {
@@ -281,7 +281,7 @@ std::expected<void, std::string> teardown_test_users(const LoadTestConfig& cfg)
     for (size_t i = 0; i < cfg.users_count; ++i)
     {
         auto u   = std::format("{}{}", cfg.username_prefix, i);
-        auto cmd = std::format("./build/bin/user_admin remove {}", u);
+        auto cmd = std::format("./bin/user_admin remove {}", u);
         int  rc  = std::system(cmd.c_str());
         (void)rc;
     }

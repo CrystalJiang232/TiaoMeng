@@ -14,7 +14,3 @@ target_link_libraries(client PRIVATE
     fundamentals
     logger
 )
-
-set_target_properties(client PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)

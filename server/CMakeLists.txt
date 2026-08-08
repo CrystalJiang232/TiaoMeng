@@ -23,8 +23,3 @@ target_link_libraries(server
     iocore
     auth
 )
-
-set_target_properties(server PROPERTIES
-    OUTPUT_NAME "server"
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)

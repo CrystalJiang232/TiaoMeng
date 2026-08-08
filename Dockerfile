@@ -45,8 +45,8 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /usr/local/lib/liboqs.so* /usr/local/lib/
 RUN ldconfig
 
-COPY --from=builder /src/build/bin/server /usr/local/bin/
-COPY --from=builder /src/build/bin/user_admin /usr/local/bin/
+COPY --from=builder /src/bin/server /usr/local/bin/
+COPY --from=builder /src/bin/user_admin /usr/local/bin/
 COPY docker-entrypoint.sh /etc/tiaomeng/
 
 RUN chown -R hibiscus:hibiscus /etc/tiaomeng \

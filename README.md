@@ -61,10 +61,10 @@ cmake --build build -j$(nproc)
 
 ```bash
 # Default port (8080) - uses server_config.json if present
-./build/bin/server
+./bin/server
 
 # Custom port (overrides config file)
-./build/bin/server 9090
+./bin/server 9090
 ```
 
 Configuration loading rules:
@@ -150,36 +150,36 @@ The auth database (`auth.db`) must be initialized before first use.
 
 ```bash
 # Initialize schema only
-./build/bin/user_admin init
+./bin/user_admin init
 
 # Initialize with bootstrap admin user
-./build/bin/user_admin init <admin_username> <admin_password>
+./bin/user_admin init <admin_username> <admin_password>
 ```
 
 ### Management Commands
 
 ```bash
 # Add user
-./build/bin/user_admin add <username> <password>
+./bin/user_admin add <username> <password>
 
 # List users
-./build/bin/user_admin list
+./bin/user_admin list
 
 # Disable/Enable user
-./build/bin/user_admin disable <username>
-./build/bin/user_admin enable <username>
+./bin/user_admin disable <username>
+./bin/user_admin enable <username>
 
 # Reset password
-./build/bin/user_admin reset <username> <new_password>
+./bin/user_admin reset <username> <new_password>
 
 # Kick user (clear connection)
-./build/bin/user_admin kick <username>
+./bin/user_admin kick <username>
 
 # Delete user permanently
-./build/bin/user_admin remove <username>
+./bin/user_admin remove <username>
 
 # Check database exists
-./build/bin/user_admin exists
+./bin/user_admin exists
 ```
 
 ### Docker Usage
