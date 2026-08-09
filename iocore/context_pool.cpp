@@ -6,7 +6,7 @@
 #include <cerrno>
 #include <exception>
 #include <format>
-#include <scope>
+#include <experimental/scope>
 #include <system_error>
 #include <thread>
 
@@ -35,7 +35,7 @@ namespace iocore
             }
 
             auto ep       = tcp::endpoint(net::ip::address_v4::any(), port);
-            auto rollback = std::scope_exit(
+            auto rollback = std::experimental::scope_exit(
                 [this]()
                 {
                     stop_cores(true);

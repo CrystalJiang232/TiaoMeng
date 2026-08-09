@@ -26,8 +26,8 @@ Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const
     , cached_state(std::nullopt)
     , write_in_progress(false)
     , fail_tracker(config.security().max_failures_before_disconnect)
-    , cfg(config)
     , sess(config.security().key_lifetime)
+    , cfg(config)
 {
     LOG_INFO("Connection established with id = {}", id);
 }

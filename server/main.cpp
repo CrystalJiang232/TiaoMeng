@@ -4,33 +4,35 @@
 #include "extern/CLI11/CLI11.hpp"
 
 #include <print>
-#include <cstring>
-#include <charconv>
-#include <optional>
+#include <filesystem>
 #include <thread>
-#include <vector>
 
 int main(int argc, char** argv)
 {
     CLI::App a;
 
-    a.add_option("port");
+    std::string config_file;
+    a.add_option("config", config_file, "Path to server config JSON file")->required();
+    // CLI parse errors (including a missing required argument) print error + usage, then exit non-zero.
+    a.failure_message(CLI::FailureMessage::help);
 
     CLI11_PARSE(a, argc, argv);
 
-    std::optional<uint16_t> cli_port;
-    if (argc > 1)
+    auto config = Config::load(config_file);
+    if (!config)
     {
-        uint16_t port = 0;
-        if (auto [ptr, ec] = std::from_chars(argv[1], argv[1] + strlen(argv[1]), port); ec == std::errc{} && port > 0)
-        {
-            cli_port = port;
-        }
+        std::println(stderr, "Config error: {}", config.error());
+        std::println(stderr, "{}", a.get_usage());
+        return 1;
     }
 
-    auto config = Config::load_or_defaults("config.json", cli_port);
+    if (!std::filesystem::exists(config->auth().db_path))
+    {
+        std::println(stderr, "Auth database file not found: {}", config->auth().db_path);
+        return 1;
+    }
 
-    auto log_cfg = config.logging();
+    auto log_cfg = config->logging();
     if (auto result = Logger::init(log_cfg.level, log_cfg.file, log_cfg.max_size_mb, log_cfg.enable_console); !result)
     {
         std::println(stderr, "Failed to initialize logger: {}", result.error());
@@ -39,7 +41,7 @@ int main(int argc, char** argv)
 
     try
     {
-        Server svr(config);
+        Server svr(*config);
 
         if (!svr.start())
         {

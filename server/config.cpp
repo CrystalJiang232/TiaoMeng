@@ -111,11 +111,13 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
 
     // New layout: all sections are nested under the top-level "server" object:
     //   server.connection / server.security / server.timeouts / server.logging.
-    // Missing sections or sub-objects fall back to defaults (existing lenient behavior).
+    // Missing server sub-sections fall back to defaults (existing lenient behavior);
+    // the top-level "auth" section is required and must provide a non-empty db_path.
     const json::object* srv_section = nullptr;
     const json::object* sec_section = nullptr;
     const json::object* to_section  = nullptr;
     const json::object* log_section = nullptr;
+    const json::object* auth_section = nullptr;
     if (auto it = root.find("server"); it != root.end() && it->value().is_object())
     {
         const auto& server_obj = it->value().as_object();
@@ -135,6 +137,10 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
         {
             log_section = &sub->value().as_object();
         }
+    }
+    if (auto it = root.find("auth"); it != root.end() && it->value().is_object())
+    {
+        auth_section = &it->value().as_object();
     }
     if (srv_section)
     {
@@ -244,6 +250,15 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
             return std::unexpected(max_size.error());
         }
         config.log.enable_console = get_bool(log, "enable_console", true);
+    }
+    if (auth_section)
+    {
+        const auto& auth = *auth_section;
+        config.auth_cfg.db_path = get_string(auth, "db_path", config.auth_cfg.db_path);
+    }
+    if (config.auth_cfg.db_path.empty())
+    {
+        return std::unexpected("Config missing required 'auth.db_path'");
     }
     return config;
 }

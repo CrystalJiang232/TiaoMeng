@@ -48,6 +48,12 @@ public:
         bool        enable_console = true;
     };
 
+    struct AuthCfg
+    {
+        // Empty by default: the config file must provide the path explicitly.
+        std::string db_path;
+    };
+
     [[nodiscard]]
     static std::expected<Config, std::string> load(const std::string&      filepath,
                                                    std::optional<uint16_t> cli_port = std::nullopt);
@@ -80,11 +86,18 @@ public:
         return log;
     }
 
+    [[nodiscard]]
+    const AuthCfg& auth() const
+    {
+        return auth_cfg;
+    }
+
 private:
     ServerCfg   srv;
     SecurityCfg sec;
     TimeoutsCfg to;
     LoggingCfg  log;
+    AuthCfg     auth_cfg;
 
     [[nodiscard]]
     static std::expected<Config, std::string> parse(const json::value& jv);

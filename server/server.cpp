@@ -65,7 +65,7 @@ Server::Server(const Config& config)
 {
     LOG_INFO("ThreadPool initialized with {} threads", tp.size());
 
-    auto auth_result = auth::AuthManager::create("auth.db", tp);
+    auto auth_result = auth::AuthManager::create(cfg.auth().db_path, tp);
     if (auth_result)
     {
         auth_mgr = std::move(*auth_result);

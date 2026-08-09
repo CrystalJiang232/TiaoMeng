@@ -18,6 +18,7 @@ TEST_CASE("Config::load_defaults returns valid configuration with default values
     CHECK(cfg.security().max_failures_before_disconnect == 5);
     CHECK(cfg.logging().level == "info");
     CHECK(cfg.logging().enable_console == true);
+    CHECK(cfg.auth().db_path.empty());
 }
 
 TEST_CASE("Config::load parses valid JSON configuration file")
@@ -51,6 +52,9 @@ TEST_CASE("Config::load parses valid JSON configuration file")
                     "max_size_mb": 50,
                     "enable_console": false
                 }
+            },
+            "auth": {
+                "db_path": "/var/lib/tiaomeng/auth.db"
             }
         })";
     }
@@ -67,6 +71,7 @@ TEST_CASE("Config::load parses valid JSON configuration file")
     CHECK(result->logging().level == "debug");
     CHECK(result->logging().file == "/var/log/test.log");
     CHECK(result->logging().enable_console == false);
+    CHECK(result->auth().db_path == "/var/lib/tiaomeng/auth.db");
 
     fs::remove(test_file);
 }
@@ -137,7 +142,10 @@ TEST_CASE("Config::load applies default values for missing configuration section
 
     {
         std::ofstream f(test_file);
-        f << R"({"server": {"connection": {"port": 6000}}})";
+        f << R"({
+            "server": {"connection": {"port": 6000}},
+            "auth": {"db_path": "/tmp/test_auth.db"}
+        })";
     }
 
     auto result = Config::load(test_file);
@@ -147,11 +155,12 @@ TEST_CASE("Config::load applies default values for missing configuration section
     CHECK(result->server().bind_address == "0.0.0.0");
     CHECK(result->security().max_failures_before_disconnect == 5);
     CHECK(result->logging().level == "info");
+    CHECK(result->auth().db_path == "/tmp/test_auth.db");
 
     fs::remove(test_file);
 }
 
-TEST_CASE("Config::load handles empty JSON object with all defaults")
+TEST_CASE("Config::load rejects config without auth section")
 {
     const char* test_file = "/tmp/test_config_empty.json";
 
@@ -162,9 +171,7 @@ TEST_CASE("Config::load handles empty JSON object with all defaults")
 
     auto result = Config::load(test_file);
 
-    REQUIRE(result.has_value());
-    CHECK(result->server().port == 8080);
-    CHECK(result->security().max_failures_before_disconnect == 5);
+    REQUIRE(!result.has_value());
 
     fs::remove(test_file);
 }
@@ -175,12 +182,48 @@ TEST_CASE("Config::load_or_defaults CLI port parameter overrides file configurat
 
     {
         std::ofstream f(test_file);
-        f << R"({"server": {"connection": {"port": 9000}}})";
+        f << R"({
+            "server": {"connection": {"port": 9000}},
+            "auth": {"db_path": "/tmp/override.db"}
+        })";
     }
 
     auto cfg = Config::load_or_defaults(test_file, static_cast<uint16_t>(7777));
 
     CHECK(cfg.server().port == 7777);
+
+    fs::remove(test_file);
+}
+
+TEST_CASE("Config::load parses auth db_path")
+{
+    const char* test_file = "/tmp/test_config_auth_db.json";
+
+    {
+        std::ofstream f(test_file);
+        f << R"({"auth": {"db_path": "/var/lib/tiaomeng/auth.db"}})";
+    }
+
+    auto result = Config::load(test_file);
+
+    REQUIRE(result.has_value());
+    CHECK(result->auth().db_path == "/var/lib/tiaomeng/auth.db");
+
+    fs::remove(test_file);
+}
+
+TEST_CASE("Config::load rejects auth section without db_path")
+{
+    const char* test_file = "/tmp/test_config_missing_db_path.json";
+
+    {
+        std::ofstream f(test_file);
+        f << R"({"auth": {}})";
+    }
+
+    auto result = Config::load(test_file);
+
+    REQUIRE(!result.has_value());
 
     fs::remove(test_file);
 }
