@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
 
 # liboqs partition
 
-ARG LIBOQS_VERSION=0.12.0
+ARG LIBOQS_VERSION=0.15.0
 RUN git config --global url."https://bgithub.xyz".insteadOf "https://github.com" && git clone --depth 1 --branch ${LIBOQS_VERSION} https://github.com/open-quantum-safe/liboqs.git /tmp/liboqs \
     && cmake -S /tmp/liboqs -B /tmp/liboqs/build \
        -DCMAKE_BUILD_TYPE=Release \

@@ -49,8 +49,22 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(Boost 1.82 REQUIRED COMPONENTS system json)
+find_package(Boost 1.82...<1.84 CONFIG REQUIRED COMPONENTS system json)
 find_package(Threads REQUIRED)
+
+# Pin the liboqs release. The Kyber768 surface used here is stable across
+# 0.12.0 -> 0.15.0, but the version must be explicit so drift fails loudly.
+set(MSG_SVR_LIBOQS_VERSION
+    "0.15.0"
+    CACHE STRING "Required liboqs version")
+find_path(MSG_SVR_OQS_INCLUDE_DIR oqs/oqsconfig.h REQUIRED)
+file(STRINGS "${MSG_SVR_OQS_INCLUDE_DIR}/oqs/oqsconfig.h" MSG_SVR_OQS_VERSION_LINE
+     REGEX "#define OQS_VERSION_TEXT")
+string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" MSG_SVR_LIBOQS_FOUND_VERSION "${MSG_SVR_OQS_VERSION_LINE}")
+if(NOT MSG_SVR_LIBOQS_FOUND_VERSION STREQUAL MSG_SVR_LIBOQS_VERSION)
+    message(FATAL_ERROR
+        "liboqs version mismatch: found '${MSG_SVR_LIBOQS_FOUND_VERSION}', required '${MSG_SVR_LIBOQS_VERSION}'")
+endif()
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 

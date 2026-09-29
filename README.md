@@ -8,7 +8,7 @@
 
 [![C++23](https://img.shields.io/badge/C++-23-blue.svg)](https://en.cppreference.com/w/cpp/23)
 [![Boost](https://img.shields.io/badge/Boost-1.82+-orange.svg)](https://www.boost.org/)
-[![liboqs](https://img.shields.io/badge/liboqs-0.12.0-green.svg)](https://github.com/open-quantum-safe/liboqs)
+[![liboqs](https://img.shields.io/badge/liboqs-0.15.0-green.svg)](https://github.com/open-quantum-safe/liboqs)
 
 A high-performance TCP messaging server implementing post-quantum cryptography (Kyber768 KEM) with C++23 coroutines, thread-per-core architecture, and comprehensive per-operation timeouts.
 
@@ -19,7 +19,7 @@ A high-performance TCP messaging server implementing post-quantum cryptography (
 - GCC 14+ or Clang 16+ (C++23 support required)
 - CMake 3.25+
 - Boost 1.82+ (system, json components)
-- liboqs 0.12.0 (Kyber768 support)
+- liboqs 0.15.0 (Kyber768 support)
 - OpenSSL 3.0+ (AES-GCM)
 - SQLite3
 - libsodium (Argon2id)
@@ -32,7 +32,7 @@ sudo apt-get install g++-14 cmake ninja-build \
     libboost-all-dev libssl-dev libsqlite3-dev libsodium-dev
 
 # liboqs (Kyber768 support)
-git clone --depth 1 --branch 0.12.0 https://github.com/open-quantum-safe/liboqs.git
+git clone --depth 1 --branch 0.15.0 https://github.com/open-quantum-safe/liboqs.git
 cmake -S liboqs -B liboqs/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
 sudo cmake --build liboqs/build -j$(nproc) && sudo cmake --install liboqs/build
 sudo ldconfig
@@ -477,7 +477,7 @@ Scalability characteristics:
 |    Build System     |          CMake 3.25+           |
 |     Networking      |        Boost.Asio 1.82+        |
 |        JSON         |           Boost.JSON           |
-| Post-Quantum Crypto |    liboqs 0.12.0 (Kyber768)    |
+| Post-Quantum Crypto |    liboqs 0.15.0 (Kyber768)    |
 |  Symmetric Crypto   |   OpenSSL 3.0+ (AES-GCM-256)   |
 |   Authentication    | libsodium (Argon2id) + SQLite3 |
 |     CLI Parsing     |        CLI11 (bundled)         |
