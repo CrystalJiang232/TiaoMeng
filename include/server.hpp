@@ -313,7 +313,6 @@ private:
     std::optional<crypto::Kyber768::keypair_t>       kp;
     std::optional<crypto::Kyber768::shared_secret_t> ss_local;
     std::optional<crypto::Kyber768::shared_secret_t> ss_remote;
-    crypto::SessionKey                               sess;
 
 public:
     void restore_cached_state()
@@ -341,6 +340,11 @@ public:
     std::optional<ConnState> cached_state;
     std::atomic<bool>        write_in_progress{false};
     FailureTracker           fail_tracker;
+
+private:
+    crypto::SessionKey       sess;
+
+public:
     const Config&            cfg;
     std::string              auth_user;
 

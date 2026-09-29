@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.25)
 
 project(msg_svr LANGUAGES CXX)
 
+# Emit build/compile_commands.json for clangd/IDE tooling (single-config generators only).
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 set(MSG_SVR_BUILD_MODE "DEFAULT" CACHE STRING "Build mode: DEFAULT, DEBUG, OPTIMIZE, TEST")
 set_property(CACHE MSG_SVR_BUILD_MODE PROPERTY STRINGS DEFAULT DEBUG OPTIMIZE TEST)
 string(TOUPPER ${MSG_SVR_BUILD_MODE} MSG_SVR_BUILD_MODE)
@@ -12,7 +15,6 @@ if(MSG_SVR_BUILD_MODE STREQUAL "DEBUG")
         add_compile_options(-O0 -g3 -fno-omit-frame-pointer)
         add_compile_options(-fsanitize=address,undefined)
         add_link_options(-fsanitize=address,undefined)
-        add_compile_options(-Wall -Wextra -Wpedantic)
     endif()
     add_compile_definitions(BOOST_ASIO_ENABLE_HANDLER_TRACKING)
 
@@ -41,8 +43,15 @@ elseif(MSG_SVR_BUILD_MODE STREQUAL "TEST")
 else()
     set(CMAKE_BUILD_TYPE RelWithDebInfo)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        add_compile_options(-O2 -g -Wall -Wextra)
+        add_compile_options(-O2 -g)
     endif()
+endif()
+
+# One warning policy for every build mode. Warnings are deliberately not fatal here:
+# no -Werror is applied by this file, so no build file can fail on a warning.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set(MSG_SVR_WARNINGS -Wall -Wextra -Wpedantic)
+    add_compile_options(${MSG_SVR_WARNINGS})
 endif()
 
 set(CMAKE_CXX_STANDARD 23)
