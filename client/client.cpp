@@ -500,134 +500,6 @@ net::awaitable<std::expected<void, std::string>> Client::async_logout()
     co_return std::expected<void, std::string>{};
 }
 
-net::awaitable<ClientRunResult> Client::run(LoadTestWindow window, MetricsCollector& mts)
-{
-    try
-    {
-        if (stop_requested.load(std::memory_order_acquire))
-        {
-            co_return ClientRunResult{ClientRunResult::Status::Cancelled, "Cancelled before connect"};
-        }
-
-        auto conn_r = co_await async_connect();
-        if (!conn_r)
-        {
-            co_return ClientRunResult{stop_requested.load(std::memory_order_acquire) ? ClientRunResult::Status::Cancelled
-                                                                                     : ClientRunResult::Status::Failed,
-                                      conn_r.error()};
-        }
-
-        auto hs_r = co_await async_handshake();
-        if (!hs_r)
-        {
-            shutdown();
-            co_return ClientRunResult{stop_requested.load(std::memory_order_acquire) ? ClientRunResult::Status::Cancelled
-                                                                                     : ClientRunResult::Status::Failed,
-                                      hs_r.error()};
-        }
-
-        auto u = std::format("{}{}", cfg.username_prefix, cfg.user_index);
-        auto p = std::format("{}{}", cfg.password_prefix, cfg.user_index);
-
-        auto auth_r = co_await async_auth(u, p);
-        if (!auth_r)
-        {
-            shutdown();
-            co_return ClientRunResult{stop_requested.load(std::memory_order_acquire) ? ClientRunResult::Status::Cancelled
-                                                                                     : ClientRunResult::Status::Failed,
-                                      auth_r.error()};
-        }
-
-        if (std::chrono::steady_clock::now() >= window.deadline)
-        {
-            shutdown();
-            co_return ClientRunResult{ClientRunResult::Status::Completed, {}};
-        }
-
-        reader_active = true;
-        std::ignore   = co_await (readLoop() || sendLoop(window, mts));
-        reader_active = false;
-        cancel_routed_response();
-        shutdown();
-
-        if (stop_requested.load(std::memory_order_acquire))
-        {
-            co_return ClientRunResult{ClientRunResult::Status::Cancelled, "Load client cancelled"};
-        }
-        if (terminal_error)
-        {
-            co_return ClientRunResult{ClientRunResult::Status::Failed, std::move(*terminal_error)};
-        }
-        co_return ClientRunResult{ClientRunResult::Status::Completed, {}};
-    }
-    catch (const std::exception& e)
-    {
-        reader_active = false;
-        cancel_routed_response();
-        shutdown();
-        co_return ClientRunResult{stop_requested.load(std::memory_order_acquire) ? ClientRunResult::Status::Cancelled
-                                                                                 : ClientRunResult::Status::Failed,
-                                  e.what()};
-    }
-    catch (...)
-    {
-        reader_active = false;
-        cancel_routed_response();
-        shutdown();
-        co_return ClientRunResult{stop_requested.load(std::memory_order_acquire) ? ClientRunResult::Status::Cancelled
-                                                                                 : ClientRunResult::Status::Failed,
-                                  "Unknown client exception"};
-    }
-}
-
-net::awaitable<void> Client::sendLoop(LoadTestWindow window, MetricsCollector& mts)
-{
-    if (cfg.rate_per_sec == 0)
-    {
-        load_finished = true;
-        shutdown();
-        co_return;
-    }
-
-    auto        interval = std::chrono::microseconds(1'000'000 / cfg.rate_per_sec);
-    std::string data(cfg.payload_size, 'x');
-
-    while (std::chrono::steady_clock::now() < window.deadline)
-    {
-        net::steady_timer t(strand);
-        t.expires_at(std::min(std::chrono::steady_clock::now() + interval, window.deadline));
-        auto [ec] = co_await t.async_wait(net::as_tuple(net::use_awaitable));
-        if (ec)
-        {
-            co_return;
-        }
-
-        if (std::chrono::steady_clock::now() >= window.deadline)
-        {
-            break;
-        }
-
-        if (std::chrono::steady_clock::now() < window.warmup_end)
-        {
-            continue;
-        }
-
-        auto r = co_await async_send_broadcast(data);
-        if (!r)
-        {
-            mts.record_fail();
-            terminal_error = r.error();
-            shutdown();
-            co_return;
-        }
-
-        mts.record_ok();
-    }
-
-    load_finished = true;
-    shutdown();
-}
-
 net::awaitable<void> Client::readLoop()
 {
     while (getState() == ClientState::Authenticated || getState() == ClientState::Established)
@@ -1289,6 +1161,23 @@ void Client::run_interactive()
 
         if (cmd == "connect")
         {
+            std::string host_arg;
+            if (iss >> host_arg)
+            {
+                cfg.host = host_arg;
+            }
+
+            unsigned port_arg = 0;
+            if (iss >> port_arg)
+            {
+                if (port_arg == 0 || port_arg > 65535)
+                {
+                    std::println("Error: port must be between 1 and 65535");
+                    continue;
+                }
+                cfg.port = static_cast<uint16_t>(port_arg);
+            }
+
             auto r = connect();
             if (!r)
             {
@@ -1304,7 +1193,7 @@ void Client::run_interactive()
                 continue;
             }
 
-            std::println("Connected. Use 'auth <user> <pass>' to authenticate.");
+            std::println("Connected to {}:{}. Use 'auth <user> <pass>' to authenticate.", cfg.host, cfg.port);
             continue;
         }
 

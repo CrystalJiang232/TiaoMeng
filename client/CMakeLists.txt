@@ -1,7 +1,6 @@
 add_executable(client
     main.cpp
     client.cpp
-    config.cpp
 )
 
 target_include_directories(client PRIVATE ${CMAKE_SOURCE_DIR}/include)
@@ -12,5 +11,4 @@ target_link_libraries(client PRIVATE
     Threads::Threads
     crypto
     fundamentals
-    logger
 )

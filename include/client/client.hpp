@@ -11,7 +11,6 @@
 #include <memory>
 
 #include "client/client_config.hpp"
-#include "client/metrics.hpp"
 #include "fundamentals/types.hpp"
 #include "crypto/kyber768.hpp"
 #include "crypto/session_key.hpp"
@@ -28,25 +27,6 @@ enum class ClientState : uint8_t
     Established,
     Authenticated,
     Closing
-};
-
-struct LoadTestWindow
-{
-    std::chrono::steady_clock::time_point warmup_end;
-    std::chrono::steady_clock::time_point deadline;
-};
-
-struct ClientRunResult
-{
-    enum class Status : uint8_t
-    {
-        Completed,
-        Failed,
-        Cancelled
-    };
-
-    Status      status = Status::Failed;
-    std::string error;
 };
 
 class Client: public std::enable_shared_from_this<Client>
@@ -82,10 +62,6 @@ public:
     net::awaitable<std::expected<json::object, std::string>> async_send_broadcast(std::string_view message);
     [[nodiscard]]
     net::awaitable<std::expected<void, std::string>> async_logout();
-
-    // Main loop for load test
-    [[nodiscard]]
-    net::awaitable<ClientRunResult> run(LoadTestWindow window, MetricsCollector& metrics);
 
     [[nodiscard]]
     net::any_io_executor get_executor() const
@@ -163,13 +139,12 @@ private:
     [[nodiscard]]
     net::awaitable<std::expected<void, std::string>> handshakeStep3();
 
-    // Loops
+    // Async read loop. Retained for the I14 rekey/notification path; the
+    // interactive REPL drives requests through the synchronous API below.
     [[nodiscard]]
     net::awaitable<void> readLoop();
     [[nodiscard]]
     net::awaitable<void> writeLoop();
-    [[nodiscard]]
-    net::awaitable<void> sendLoop(LoadTestWindow window, MetricsCollector& mts);
 
     // Write queue management
     void enqueue_msg(const Msg& msg);
@@ -180,8 +155,8 @@ private:
     void clearCrypto() noexcept;
 
     // Members
-    const ClientConfig cfg;
-    bool               owns_io_ctx;
+    ClientConfig cfg;
+    bool         owns_io_ctx;
 
     // I/O
     std::optional<net::io_context>    io_ctx_storage;
