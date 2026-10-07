@@ -240,13 +240,13 @@ public:
     [[nodiscard]]
     bool has_session_key() const
     {
-        return sess.is_established();
+        return sess.has_value();
     }
 
     [[nodiscard]]
     std::span<const uint8_t> session_key() const
     {
-        return sess.key();
+        return sess->key();
     }
 
     [[nodiscard]]
@@ -342,7 +342,7 @@ public:
     FailureTracker           fail_tracker;
 
 private:
-    crypto::SessionKey       sess;
+    std::optional<crypto::SessionKey> sess;
 
 public:
     const Config&            cfg;

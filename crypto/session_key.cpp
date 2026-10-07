@@ -7,15 +7,15 @@
 namespace crypto
 {
 
-    SessionKey::SessionKey(duration_t lifetime)
-        : key_lifetime(lifetime)
+    SessionKey::SessionKey(std::span<const uint8_t> local_secret, std::span<const uint8_t> remote_secret)
+        : ky(Kyber768::combine_secrets(local_secret, remote_secret))
+        , update_tp(clock_t::now())
     {
     }
 
-    void SessionKey::complete_handshake(std::span<const uint8_t> local_secret, std::span<const uint8_t> remote_secret)
+    SessionKey::~SessionKey()
     {
-        ky          = Kyber768::combine_secrets(local_secret, remote_secret);
-        last_update = clock_t::now();
+        secure_clear(ky);
     }
 
     void SessionKey::reset_nonce()
@@ -37,11 +37,6 @@ namespace crypto
 
     std::optional<std::vector<uint8_t>> SessionKey::encrypt(std::span<const uint8_t> plaintext)
     {
-        if (status() == KeyStat::None)
-        {
-            return std::nullopt;
-        }
-
         uint64_t           ctr = nonce_ctr.fetch_add(1, std::memory_order_acq_rel);
         AES256GCM::nonce_t nonce{};
 
@@ -73,7 +68,7 @@ namespace crypto
 
     std::optional<std::vector<uint8_t>> SessionKey::decrypt(std::span<const uint8_t> ciphertext)
     {
-        if (status() == KeyStat::None || ciphertext.size() < AES256GCM::nonce_sz + AES256GCM::tag_sz)
+        if (ciphertext.size() < AES256GCM::nonce_sz + AES256GCM::tag_sz)
         {
             return std::nullopt;
         }
@@ -98,13 +93,6 @@ namespace crypto
         std::ranges::copy(tag_view, ct.tag.begin());
 
         return AES256GCM::decrypt(ky, nonce, ct);
-    }
-
-    void SessionKey::clear()
-    {
-        secure_clear(ky);
-        last_update = std::nullopt;
-        nonce_ctr.store(0, std::memory_order_release);
     }
 
 } // namespace crypto

@@ -168,55 +168,29 @@ TEST_CASE("AES256GCM large payload encryption roundtrip")
     CHECK(*recovered == plaintext);
 }
 
-TEST_CASE("SessionKey initial state is not established")
+TEST_CASE("SessionKey constructs from two secrets")
 {
-    SessionKey sess;
-    CHECK(sess.is_established() == false);
-}
-
-TEST_CASE("SessionKey complete_handshake establishes key material")
-{
-    SessionKey              sess;
     std::array<uint8_t, 32> local{};
     std::array<uint8_t, 32> remote{};
 
     local.fill(0x11);
     remote.fill(0x22);
 
-    sess.complete_handshake(local, remote);
+    SessionKey sess(local, remote);
 
-    CHECK(sess.is_established() == true);
     CHECK(sess.key().size() == 32);
-}
-
-TEST_CASE("SessionKey encrypt requires established state")
-{
-    SessionKey           sess;
-    std::vector<uint8_t> plaintext{0x01, 0x02};
-
-    auto ct = sess.encrypt(plaintext);
-    CHECK(!ct.has_value());
-}
-
-TEST_CASE("SessionKey decrypt requires established state")
-{
-    SessionKey           sess;
-    std::vector<uint8_t> ciphertext{0x01, 0x02, 0x03, 0x04};
-
-    auto pt = sess.decrypt(ciphertext);
-    CHECK(!pt.has_value());
+    CHECK(sess.update_timepoint() <= SessionKey::clock_t::now());
 }
 
 TEST_CASE("SessionKey encrypt decrypt roundtrip preserves data")
 {
-    SessionKey              sess;
     std::array<uint8_t, 32> local{};
     std::array<uint8_t, 32> remote{};
 
     local.fill(0x33);
     remote.fill(0x44);
 
-    sess.complete_handshake(local, remote);
+    SessionKey sess(local, remote);
 
     std::vector<uint8_t> plaintext{0x48, 0x65, 0x6C, 0x6C, 0x6F};
     auto                 ct = sess.encrypt(plaintext);
@@ -229,13 +203,13 @@ TEST_CASE("SessionKey encrypt decrypt roundtrip preserves data")
 
 TEST_CASE("SessionKey multiple messages use unique nonces")
 {
-    SessionKey              sess;
     std::array<uint8_t, 32> local{};
     std::array<uint8_t, 32> remote{};
 
     local.fill(0x55);
     remote.fill(0x66);
-    sess.complete_handshake(local, remote);
+
+    SessionKey sess(local, remote);
 
     std::vector<uint8_t> msg1{0x01, 0x02};
     std::vector<uint8_t> msg2{0x03, 0x04};
@@ -253,21 +227,4 @@ TEST_CASE("SessionKey multiple messages use unique nonces")
     REQUIRE(recovered2.has_value());
     CHECK(*recovered1 == msg1);
     CHECK(*recovered2 == msg2);
-}
-
-TEST_CASE("SessionKey clear resets established state")
-{
-    SessionKey              sess;
-    std::array<uint8_t, 32> local{};
-    std::array<uint8_t, 32> remote{};
-
-    local.fill(0x77);
-    remote.fill(0x88);
-
-    sess.complete_handshake(local, remote);
-    CHECK(sess.is_established() == true);
-
-    sess.clear();
-
-    CHECK(sess.is_established() == false);
 }

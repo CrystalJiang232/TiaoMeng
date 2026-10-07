@@ -26,7 +26,6 @@ Connection::Connection(tcp::socket sock, Server* srv, std::string conn_id, const
     , cached_state(std::nullopt)
     , write_in_progress(false)
     , fail_tracker(config.security().max_failures_before_disconnect)
-    , sess(config.security().key_lifetime)
     , cfg(config)
 {
     LOG_INFO("Connection established with id = {}", id);
@@ -50,7 +49,7 @@ Connection::~Connection() noexcept
     {
         secure_clear(kp->secret_key);
     }
-    sess.clear();
+    sess.reset();
     LOG_INFO("Disconnected with id = {}", id);
 }
 
@@ -397,8 +396,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
             }
             ss_remote = std::move(encap_result->shared_secret);
 
-            sess.complete_handshake(std::span<const uint8_t>(ss_local->data(), ss_local->size()),
-                                    std::span<const uint8_t>(ss_A->data(), ss_A->size()));
+            sess.emplace(std::span<const uint8_t>(ss_local->data(), ss_local->size()),
+                         std::span<const uint8_t>(ss_A->data(), ss_A->size()));
 
             auto response = status_msg("ConnectionReady", "Secure channel established, please authenticate");
 
@@ -410,7 +409,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
                                  }) |
                              std::ranges::to<std::vector<uint8_t>>();
 
-            auto encrypted = sess.encrypt(plaintext);
+            auto encrypted = sess->encrypt(plaintext);
             if (!encrypted)
             {
                 LOG_ERROR("Failed to encrypt handshake response");
@@ -521,8 +520,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
                 }
                 ss_remote = std::move(encap_result->shared_secret);
 
-                sess.complete_handshake(std::span<const uint8_t>(ss_local->data(), ss_local->size()),
-                                        std::span<const uint8_t>(ss_A->data(), ss_A->size()));
+                sess.emplace(std::span<const uint8_t>(ss_local->data(), ss_local->size()),
+                             std::span<const uint8_t>(ss_A->data(), ss_A->size()));
 
                 auto response = status_msg("RekeyComplete", "Secure channel re-established");
 
@@ -534,7 +533,7 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
                                      }) |
                                  std::ranges::to<std::vector<uint8_t>>();
 
-                auto encrypted = sess.encrypt(plaintext);
+                auto encrypted = sess->encrypt(plaintext);
                 if (!encrypted)
                 {
                     LOG_ERROR("Failed to encrypt rekey response");
@@ -593,23 +592,16 @@ void Connection::cache_and_set_rekeying()
 
 net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 {
-    if (!sess.is_established())
+    if (!sess)
     {
         send_raw_error("Session key not established");
-        co_return;
-    }
-
-    bool key_was_expired = !sess.valid();
-    if (key_was_expired && getstate() != ConnState::Rekeying)
-    {
-        std::ignore = send_error("Key expired, rekeying required");
         co_return;
     }
 
     auto ct =
         msg.payload | std::views::transform(std::to_underlying<std::byte>) | std::ranges::to<std::vector<uint8_t>>();
 
-    auto decrypted = sess.decrypt(ct);
+    auto decrypted = sess->decrypt(ct);
     if (!decrypted)
     {
         if (server)
@@ -640,7 +632,22 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
         co_return;
     }
 
-    co_await handle_request(parsed.as_object());
+    auto& request = parsed.as_object();
+
+    bool is_rekey = false;
+    if (auto it = request.find("action"); it != request.end() && it->value().is_string())
+    {
+        is_rekey = std::string(it->value().as_string()) == "rekey";
+    }
+
+    bool key_was_expired = sess->update_timepoint() + cfg.security().key_lifetime < crypto::SessionKey::clock_t::now();
+    if (!is_rekey && key_was_expired)
+    {
+        std::ignore = send_error("Key expired, rekeying required");
+        co_return;
+    }
+
+    co_await handle_request(request);
 }
 
 net::awaitable<void> Connection::handle_request(const json::object& request)
@@ -707,7 +714,7 @@ void Connection::send(const Msg& msg)
 
 void Connection::send_encrypted(const json::object& json_obj, MsgType type)
 {
-    if (!sess.is_established())
+    if (!sess)
     {
         return;
     }
@@ -721,7 +728,7 @@ void Connection::send_encrypted(const json::object& json_obj, MsgType type)
                          }) |
                      std::ranges::to<std::vector<uint8_t>>();
 
-    auto encrypted = sess.encrypt(plaintext);
+    auto encrypted = sess->encrypt(plaintext);
     if (!encrypted)
     {
         return;
@@ -740,7 +747,7 @@ void Connection::send_encrypted(const json::object& json_obj, MsgType type)
 
 void Connection::send_encrypted(const Msg& msg)
 {
-    if (!sess.is_established())
+    if (!sess)
     {
         return;
     }
@@ -748,7 +755,7 @@ void Connection::send_encrypted(const Msg& msg)
     auto plaintext = msg::serialize(msg) | std::views::transform(std::to_underlying<std::byte>) |
                      std::ranges::to<std::vector<uint8_t>>();
 
-    auto encrypted = sess.encrypt(plaintext);
+    auto encrypted = sess->encrypt(plaintext);
     if (!encrypted)
     {
         return;

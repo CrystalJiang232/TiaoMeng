@@ -228,8 +228,8 @@ net::awaitable<std::expected<void, std::string>> Client::handshakeStep2()
         co_return std::unexpected("Handshake step3 write failed");
     }
 
-    cipher.complete_handshake(std::span<const uint8_t>(ss_remote->data(), ss_remote->size()),
-                              std::span<const uint8_t>(ss_local->data(), ss_local->size()));
+    cipher.emplace(std::span<const uint8_t>(ss_remote->data(), ss_remote->size()),
+                   std::span<const uint8_t>(ss_local->data(), ss_local->size()));
 
     crypto::secure_clear(kp->secret_key);
 
@@ -245,7 +245,7 @@ net::awaitable<std::expected<void, std::string>> Client::handshakeStep3()
     }
 
     auto step4     = std::move(*step4_result);
-    auto decrypted = cipher.decrypt(
+    auto decrypted = cipher->decrypt(
         std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(step4.payload.data()), step4.payload.size()));
 
     if (!decrypted)
@@ -283,7 +283,7 @@ net::awaitable<std::expected<void, std::string>> Client::async_auth(std::string_
     auto         json_str = json::serialize(req);
     std::vector<uint8_t> plaintext(json_str.begin(), json_str.end());
 
-    auto encrypted = cipher.encrypt(plaintext);
+    auto encrypted = cipher->encrypt(plaintext);
     if (!encrypted)
     {
         co_return std::unexpected("Encryption failed");
@@ -316,7 +316,7 @@ net::awaitable<std::expected<void, std::string>> Client::async_auth(std::string_
     }
 
     auto resp      = std::move(*resp_result);
-    auto decrypted = cipher.decrypt(
+    auto decrypted = cipher->decrypt(
         std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(resp.payload.data()), resp.payload.size()));
 
     if (!decrypted)
@@ -356,7 +356,7 @@ net::awaitable<std::expected<json::object, std::string>> Client::async_send_comm
     auto                 json_str = json::serialize(req);
     std::vector<uint8_t> plaintext(json_str.begin(), json_str.end());
 
-    auto encrypted = cipher.encrypt(plaintext);
+    auto encrypted = cipher->encrypt(plaintext);
     if (!encrypted)
     {
         co_return std::unexpected("Encryption failed");
@@ -404,7 +404,7 @@ net::awaitable<std::expected<json::object, std::string>> Client::async_send_broa
     auto                 json_str = json::serialize(req);
     std::vector<uint8_t> plaintext(json_str.begin(), json_str.end());
 
-    auto encrypted = cipher.encrypt(plaintext);
+    auto encrypted = cipher->encrypt(plaintext);
     if (!encrypted)
     {
         co_return std::unexpected("Encryption failed");
@@ -451,7 +451,7 @@ net::awaitable<std::expected<void, std::string>> Client::async_logout()
     auto                 json_str = json::serialize(req);
     std::vector<uint8_t> plaintext(json_str.begin(), json_str.end());
 
-    auto encrypted = cipher.encrypt(plaintext);
+    auto encrypted = cipher->encrypt(plaintext);
     if (!encrypted)
     {
         co_return std::unexpected("Encryption failed");
@@ -654,7 +654,7 @@ net::awaitable<std::expected<Msg, std::string>>
 std::expected<json::object, std::string> Client::decode_response(const Msg& m)
 {
     auto decrypted =
-        cipher.decrypt(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(m.payload.data()), m.payload.size()));
+        cipher->decrypt(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(m.payload.data()), m.payload.size()));
     if (!decrypted)
     {
         return std::unexpected("Decryption failed");
@@ -674,7 +674,7 @@ std::expected<json::object, std::string> Client::decode_response(const Msg& m)
 std::expected<json::object, std::string> Client::decode_notification(const Msg& m)
 {
     auto decrypted =
-        cipher.decrypt(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(m.payload.data()), m.payload.size()));
+        cipher->decrypt(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(m.payload.data()), m.payload.size()));
     if (!decrypted)
     {
         return std::unexpected("Notification decryption failed");
@@ -960,7 +960,7 @@ void Client::clearCrypto() noexcept
     {
         crypto::secure_clear(kp->secret_key);
     }
-    cipher.clear();
+    cipher.reset();
 }
 
 // Sync API wrappers

@@ -168,7 +168,7 @@ private:
 
     // Crypto
     crypto::Kyber768                                 kem;
-    crypto::SessionKey                               cipher;
+    std::optional<crypto::SessionKey>                cipher;
     std::optional<crypto::Kyber768::keypair_t>       kp;
     std::optional<crypto::Kyber768::shared_secret_t> ss_local;
     std::optional<crypto::Kyber768::shared_secret_t> ss_remote;
