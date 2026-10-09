@@ -18,7 +18,6 @@ struct ServerMetrics
     std::atomic<uint64_t> bytes_received{0};
     std::atomic<uint64_t> bytes_sent{0};
     std::atomic<uint64_t> errors{0};
-    std::atomic<uint64_t> timeouts{0};
 
     std::chrono::steady_clock::time_point start_time{std::chrono::steady_clock::now()};
 
@@ -38,7 +37,6 @@ struct ServerMetrics
         bytes_received.store(0, std::memory_order_release);
         bytes_sent.store(0, std::memory_order_release);
         errors.store(0, std::memory_order_release);
-        timeouts.store(0, std::memory_order_release);
     }
 
     [[nodiscard]]
@@ -162,17 +160,6 @@ struct ServerMetrics
         errors.fetch_add(1, std::memory_order_relaxed);
     }
 
-    [[nodiscard]]
-    uint64_t get_timeouts(bool precise = false) const
-    {
-        return timeouts.load(precise ? std::memory_order_acquire : std::memory_order_relaxed);
-    }
-
-    void inc_timeouts()
-    {
-        timeouts.fetch_add(1, std::memory_order_relaxed);
-    }
-
     void print() const;
 };
 
@@ -199,7 +186,6 @@ template <> struct std::formatter<ServerMetrics>
         uint64_t bytes_recv       = s.get_bytes_received();
         uint64_t bytes_sent_total = s.get_bytes_sent();
         uint64_t err_count        = s.get_errors();
-        uint64_t timeout_count    = s.get_timeouts();
 
         constexpr double MB = static_cast<double>(1024 * 1024);
 
@@ -247,7 +233,6 @@ template <> struct std::formatter<ServerMetrics>
         lines.push_back(std::format(""));
         lines.push_back(std::format("--- ERRORS ---"));
         lines.push_back(std::format("  Errors:          {}", err_count));
-        lines.push_back(std::format("  Timeouts:        {}", timeout_count));
         lines.push_back(std::format("============================================================"));
 
         return std::ranges::copy(lines | std::views::join_with('\n'), fc.out()).out;

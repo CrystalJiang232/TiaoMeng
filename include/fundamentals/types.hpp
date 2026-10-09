@@ -21,11 +21,19 @@ enum class MsgSemantic : uint8_t
 constexpr MsgType encrypted_flag = 0x80;
 constexpr MsgType semantic_mask  = 0x0F;
 
-constexpr bool is_encrypted(MsgType type) { return (type & encrypted_flag) != 0; }
-constexpr MsgSemantic get_semantic(MsgType type) { return static_cast<MsgSemantic>(type & semantic_mask); }
-constexpr MsgType make_type(bool encrypted, MsgSemantic semantic) 
-{ 
-    return (encrypted ? encrypted_flag : 0) | static_cast<MsgType>(semantic); 
+constexpr bool is_encrypted(MsgType type)
+{
+    return (type & encrypted_flag) != 0;
+}
+
+constexpr MsgSemantic get_semantic(MsgType type)
+{
+    return static_cast<MsgSemantic>(type & semantic_mask);
+}
+
+constexpr MsgType make_type(bool encrypted, MsgSemantic semantic)
+{
+    return (encrypted ? encrypted_flag : 0) | static_cast<MsgType>(semantic);
 }
 
 constexpr MsgType plaintext_handshake = make_type(false, MsgSemantic::Handshake);
@@ -41,14 +49,14 @@ struct Msg
 
     enum class errc
     {
-        OK = 0,
-        size_err = 1,
+        OK             = 0,
+        size_err       = 1,
         len_verify_err = 2,
-        type_err = 3
+        type_err       = 3
     };
 
-    uint32_t len;
-    MsgType type;
+    uint32_t  len;
+    MsgType   type;
     payload_t payload;
 
     static constexpr size_t max_len = 1024 * 1024;

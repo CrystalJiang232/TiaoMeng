@@ -113,10 +113,10 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
     //   server.connection / server.security / server.timeouts / server.logging.
     // Missing server sub-sections fall back to defaults (existing lenient behavior);
     // the top-level "auth" section is required and must provide a non-empty db_path.
-    const json::object* srv_section = nullptr;
-    const json::object* sec_section = nullptr;
-    const json::object* to_section  = nullptr;
-    const json::object* log_section = nullptr;
+    const json::object* srv_section  = nullptr;
+    const json::object* sec_section  = nullptr;
+    const json::object* to_section   = nullptr;
+    const json::object* log_section  = nullptr;
     const json::object* auth_section = nullptr;
     if (auto it = root.find("server"); it != root.end() && it->value().is_object())
     {
@@ -238,7 +238,7 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
     }
     if (log_section)
     {
-        const auto& log = *log_section;
+        const auto& log  = *log_section;
         config.log.level = get_string(log, "level", "info");
         config.log.file  = get_string(log, "file", "");
         if (auto max_size = get_uint<size_t>(log, "max_size_mb", 1, 10000, 100); max_size)
@@ -253,7 +253,7 @@ std::expected<Config, std::string> Config::parse(const json::value& jv)
     }
     if (auth_section)
     {
-        const auto& auth = *auth_section;
+        const auto& auth        = *auth_section;
         config.auth_cfg.db_path = get_string(auth, "db_path", config.auth_cfg.db_path);
     }
     if (config.auth_cfg.db_path.empty())

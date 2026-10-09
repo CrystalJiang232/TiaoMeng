@@ -54,6 +54,7 @@ void EventHandler::route(std::shared_ptr<Connection> conn, const json::object& r
         {
             LOG_DEBUG("[EVT] {} route() session invalid, closing", conn->get_id());
             conn->error_and_close("Session terminated");
+            return;
         }
         LOG_DEBUG("[EVT] {} route() conn validated", conn->get_id());
     }
@@ -85,11 +86,8 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
 
     if (auto ret = json_utils::extract_str(request, "username"); !ret)
     {
-        if (self->server)
-        {
-            self->server->metrics().inc_authentications_failed();
-        }
-        std::ignore = self->send_error("Authentication failed");
+        std::ignore = self->send_error("Authentication failed", Connection::CloseMode::Graceful, false,
+                                       Connection::ErrorType::Auth);
         LOG_DEBUG("[EVT] {} handle_auth EXIT: no username", self->get_id());
         return;
     }
@@ -100,9 +98,8 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
 
     if (auto ret = json_utils::extract_str(request, "password"); !ret)
     {
-        if (self->server)
-            self->server->metrics().inc_authentications_failed();
-        std::ignore = self->send_error("Authentication failed");
+        std::ignore = self->send_error("Authentication failed", Connection::CloseMode::Graceful, false,
+                                       Connection::ErrorType::Auth);
         LOG_DEBUG("[EVT] {} handle_auth EXIT: no password", self->get_id());
         return;
     }
@@ -133,9 +130,8 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
 
     if (auth_result.locked)
     {
-        std::ignore = self->send_error("Account locked");
-        if (self->server)
-            self->server->metrics().inc_authentications_failed();
+        std::ignore =
+            self->send_error("Account locked", Connection::CloseMode::Graceful, false, Connection::ErrorType::Auth);
         LOG_INFO("Client {} authentication failed: account locked", self->get_id());
         LOG_DEBUG("[EVT] {} handle_auth EXIT: account locked", self->get_id());
         return;
@@ -143,9 +139,8 @@ void EventHandler::handle_auth(std::shared_ptr<Connection> self, const json::obj
 
     if (!auth_result.success)
     {
-        std::ignore = self->send_error("Authentication failed");
-        if (self->server)
-            self->server->metrics().inc_authentications_failed();
+        std::ignore = self->send_error("Authentication failed", Connection::CloseMode::Graceful, false,
+                                       Connection::ErrorType::Auth);
         LOG_INFO("Client {} authentication failed", self->get_id());
         LOG_DEBUG("[EVT] {} handle_auth EXIT: auth failed", self->get_id());
         return;

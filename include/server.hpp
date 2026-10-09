@@ -175,6 +175,14 @@ public:
         Immediate
     };
 
+    enum class ErrorType
+    {
+        None,
+        Generic,
+        Handshake,
+        Auth
+    };
+
     struct FailureTracker
     {
         const size_t        max_failures = 5;
@@ -238,12 +246,6 @@ public:
     void shutdown() noexcept;
 
     [[nodiscard]]
-    bool has_session_key() const
-    {
-        return sess.has_value();
-    }
-
-    [[nodiscard]]
     std::span<const uint8_t> session_key() const
     {
         return sess->key();
@@ -281,10 +283,10 @@ public:
         fail_tracker.reset();
     }
 
-    void send_raw_error(std::string_view err, CloseMode mode = CloseMode::Graceful);
     [[nodiscard("Do not discard send_error's value: caller is responsible for co_return upon this function returning "
                 "true to prevent connection leakage. Use std::ignore or void cast for explicit schematics.")]]
-    bool send_error(std::string_view err, CloseMode mode = CloseMode::Graceful, bool force_close = false);
+    bool send_error(std::string_view err, CloseMode mode = CloseMode::Graceful, bool force_close = false,
+                    ErrorType type = ErrorType::None);
     void error_and_close(std::string_view err_text);
 
 private:
@@ -345,8 +347,8 @@ private:
     std::optional<crypto::SessionKey> sess;
 
 public:
-    const Config&            cfg;
-    std::string              auth_user;
+    const Config& cfg;
+    std::string   auth_user;
 
     friend class EventHandler;
 };

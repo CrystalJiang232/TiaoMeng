@@ -314,17 +314,15 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         {
             if (msg.payload.size() != Kyber768::public_key_size)
             {
-                send_raw_error(std::format("Invalid client public key size: expected {}, got {}",
-                                           Kyber768::public_key_size, msg.payload.size()));
+                std::ignore = send_error(std::format("Invalid client public key size: expected {}, got {}",
+                                                     Kyber768::public_key_size, msg.payload.size()));
                 co_return;
             }
 
             auto kp_result = kem.generate_keypair();
             if (!kp_result)
             {
-                if (server)
-                    server->metrics().inc_handshakes_failed();
-                send_raw_error("Failed to generate keypair");
+                std::ignore = send_error("Failed to generate keypair", CloseMode::Graceful, false, ErrorType::Handshake);
                 co_return;
             }
             kp = std::move(*kp_result);
@@ -334,9 +332,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
             auto encap_result = kem.encapsulate(cpk);
             if (!encap_result)
             {
-                if (server)
-                    server->metrics().inc_handshakes_failed();
-                send_raw_error("Failed to encapsulate to client public key");
+                std::ignore = send_error("Failed to encapsulate to client public key", CloseMode::Graceful, false,
+                                         ErrorType::Handshake);
                 co_return;
             }
             ss_A = std::move(encap_result->shared_secret);
@@ -351,8 +348,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
             LOG_DEBUG("Connection {} msg::make success={}", id, send_result.has_value());
             if (!send_result)
             {
-                send_raw_error(std::format("Failed to create handshake message, errc = {}",
-                                           std::to_underlying(send_result.error())));
+                std::ignore = send_error(std::format("Failed to create handshake message, errc = {}",
+                                                     std::to_underlying(send_result.error())));
                 co_return;
             }
             LOG_DEBUG("Connection {} calling send() with handshake response", id);
@@ -369,8 +366,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
         {
             if (msg.payload.size() < Kyber768::ciphertext_size)
             {
-                send_raw_error(std::format("Invalid handshake payload size: expected at least {}, got {}",
-                                           Kyber768::ciphertext_size, msg.payload.size()));
+                std::ignore = send_error(std::format("Invalid handshake payload size: expected at least {}, got {}",
+                                                     Kyber768::ciphertext_size, msg.payload.size()));
                 co_return;
             }
 
@@ -379,9 +376,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
             auto decap_result = kem.decapsulate(cct, kp->secret_key);
             if (!decap_result)
             {
-                if (server)
-                    server->metrics().inc_handshakes_failed();
-                send_raw_error("Failed to decapsulate client ciphertext");
+                std::ignore = send_error("Failed to decapsulate client ciphertext", CloseMode::Graceful, false,
+                                         ErrorType::Handshake);
                 co_return;
             }
             ss_local = std::move(*decap_result);
@@ -389,9 +385,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
             auto encap_result = kem.encapsulate(*client_pk);
             if (!encap_result)
             {
-                if (server)
-                    server->metrics().inc_handshakes_failed();
-                send_raw_error("Failed to encapsulate to client public key");
+                std::ignore = send_error("Failed to encapsulate to client public key", CloseMode::Graceful, false,
+                                         ErrorType::Handshake);
                 co_return;
             }
             ss_remote = std::move(encap_result->shared_secret);
@@ -455,9 +450,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
                 auto kp_result = kem.generate_keypair();
                 if (!kp_result)
                 {
-                    if (server)
-                        server->metrics().inc_handshakes_failed();
-                    send_raw_error("Failed to generate keypair");
+                    std::ignore =
+                        send_error("Failed to generate keypair", CloseMode::Graceful, false, ErrorType::Handshake);
                     co_return;
                 }
                 kp = std::move(*kp_result);
@@ -468,12 +462,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
                 auto encap_result = kem.encapsulate(cpk);
                 if (!encap_result)
                 {
-                    if (server)
-                    {
-                        server->metrics().inc_handshakes_failed();
-                    }
-
-                    send_raw_error("Failed to encapsulate to client public key");
+                    std::ignore = send_error("Failed to encapsulate to client public key", CloseMode::Graceful, false,
+                                             ErrorType::Handshake);
                     co_return;
                 }
                 ss_A = std::move(encap_result->shared_secret);
@@ -487,8 +477,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
                 auto send_result = msg::make(to_bytes<uint8_t>(payload), plaintext_handshake);
                 if (!send_result)
                 {
-                    send_raw_error(std::format("Failed to create handshake message, errc = {}",
-                                               std::to_underlying(send_result.error())));
+                    std::ignore = send_error(std::format("Failed to create handshake message, errc = {}",
+                                                         std::to_underlying(send_result.error())));
                     co_return;
                 }
                 send(*send_result);
@@ -503,9 +493,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
                 auto decap_result = kem.decapsulate(cct, kp->secret_key);
                 if (!decap_result)
                 {
-                    if (server)
-                        server->metrics().inc_handshakes_failed();
-                    send_raw_error("Failed to decapsulate client ciphertext");
+                    std::ignore = send_error("Failed to decapsulate client ciphertext", CloseMode::Graceful, false,
+                                             ErrorType::Handshake);
                     co_return;
                 }
                 ss_local = std::move(*decap_result);
@@ -513,9 +502,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
                 auto encap_result = kem.encapsulate(*client_pk);
                 if (!encap_result)
                 {
-                    if (server)
-                        server->metrics().inc_handshakes_failed();
-                    send_raw_error("Failed to encapsulate to client public key");
+                    std::ignore = send_error("Failed to encapsulate to client public key", CloseMode::Graceful, false,
+                                             ErrorType::Handshake);
                     co_return;
                 }
                 ss_remote = std::move(encap_result->shared_secret);
@@ -566,7 +554,8 @@ net::awaitable<void> Connection::handle_handshake(const Msg& msg)
             }
             else
             {
-                send_raw_error(std::format("Invalid rekey payload size: expected {} or at least {}, got {}",
+                std::ignore =
+                    send_error(std::format("Invalid rekey payload size: expected {} or at least {}, got {}",
                                            Kyber768::public_key_size, Kyber768::ciphertext_size, msg.payload.size()));
                 co_return;
             }
@@ -594,7 +583,7 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
 {
     if (!sess)
     {
-        send_raw_error("Session key not established");
+        std::ignore = send_error("Session key not established");
         co_return;
     }
 
@@ -604,10 +593,8 @@ net::awaitable<void> Connection::handle_encrypted(const Msg& msg)
     auto decrypted = sess->decrypt(ct);
     if (!decrypted)
     {
-        if (server)
-            server->metrics().inc_errors();
         LOG_ERROR("Decryption failed in connection with {}", get_id());
-        std::ignore = send_error("Decryption failed");
+        std::ignore = send_error("Decryption failed", CloseMode::Graceful, false, ErrorType::Generic);
         co_return;
     }
 
@@ -885,23 +872,8 @@ void Connection::close(CloseMode mode)
         net::detached);
 }
 
-// Defaults to force close
-void Connection::send_raw_error(std::string_view err, CloseMode mode)
-{
-    if (is_closing())
-    {
-        return;
-    }
-
-    LOG_DEBUG("Connection {} send_raw_error: {}", id, err);
-    static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
-
-    auto err_msg = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
-    send(err_msg); // sends anyway
-    close(mode);
-}
-
-bool Connection::send_error(std::string_view err, CloseMode mode, bool force_close)
+// Unified error relay: encrypted once a session key is established, plaintext otherwise.
+bool Connection::send_error(std::string_view err, CloseMode mode, bool force_close, ErrorType type)
 {
     if (is_closing())
     {
@@ -909,28 +881,45 @@ bool Connection::send_error(std::string_view err, CloseMode mode, bool force_clo
     }
 
     LOG_DEBUG("Connection {} send_error: {}", id, err);
-    send_encrypted(status_msg("Error", err), encrypted_error);
-    if (force_close || record_failure())
+
+    if (server)
     {
-        close(mode);
-        return true;
+        switch (type)
+        {
+            case ErrorType::None:
+                break;
+            case ErrorType::Generic:
+                server->metrics().inc_errors();
+                break;
+            case ErrorType::Handshake:
+                server->metrics().inc_handshakes_failed();
+                break;
+            case ErrorType::Auth:
+                server->metrics().inc_authentications_failed();
+                break;
+        }
     }
-    return false;
+
+    if (sess)
+    {
+        send_encrypted(status_msg("Error", err), encrypted_error);
+        if (force_close || record_failure())
+        {
+            close(mode);
+            return true;
+        }
+        return false;
+    }
+
+    static const Msg decay_msg = *msg::make(bytes::to_bytes("Unknown error"), plaintext_error);
+    auto             err_msg   = msg::make(bytes::to_bytes(err), plaintext_error).value_or(decay_msg);
+    send(err_msg);
+    close(mode);
+    return true;
 }
 
+// Always-close helper: delegates to the unified send_error with force_close.
 void Connection::error_and_close(std::string_view err_text)
 {
-    if (is_closing()) // Already closing, do not append any error texts into it(mostly caused by write/read functions)
-    {
-        return;
-    }
-
-    if (has_session_key())
-    {
-        std::ignore = send_error(err_text, CloseMode::Graceful, true);
-    }
-    else
-    {
-        send_raw_error(err_text, CloseMode::Graceful);
-    }
+    std::ignore = send_error(err_text, CloseMode::Graceful, true);
 }
